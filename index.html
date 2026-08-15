@@ -1365,6 +1365,20 @@
                 <textarea id="exportPreview" readonly></textarea>
             </div>
         </div>
+
+        <!-- Export to Pre/Post Call Excel -->
+        <div class="card">
+            <h2>📑 Export to Pre/Post Call Excel</h2>
+            <p class="muted">Upload your current Pre/Post Call Excel file — this fills in the POST CALL columns for doctors you've already logged real calls with, matched by name and date. Nothing else in the file is changed, and Class/Sales/Remarks are left blank for you to fill in by hand. The file never leaves your browser.</p>
+
+            <div class="form-group">
+                <label>Your Pre/Post Call Excel file</label>
+                <input type="file" id="excelUploadInput" accept=".xlsx,.xls">
+            </div>
+
+            <button class="secondary" id="generateExcelBtn" disabled>Generate Filled Copy</button>
+            <div id="excelExportResult" class="no-calls-message" style="display: none;"></div>
+        </div>
     </div>
 
     <div id="undoToast">
@@ -1372,6 +1386,7 @@
         <button type="button" id="undoBtn">Undo</button>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script>
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
@@ -1944,6 +1959,130 @@
                 e.target.value = '';
             };
             reader.readAsText(file);
+        });
+
+        // Export to Pre/Post Call Excel
+        let uploadedExcelWorkbook = null;
+
+        function normalizeDoctorNameForExcel(name) {
+            return String(name || '')
+                .toLowerCase()
+                .replace(/^(dr\.?|prof\.?|dato'?|datuk|datin|miss|mrs|mr)\s+/g, '')
+                .replace(/[.']/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        function formatDateForExcel(id) {
+            const d = new Date(id);
+            return `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)}`;
+        }
+
+        function excelCellValue(ws, r, c) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            return ws[addr] ? ws[addr].v : '';
+        }
+
+        function excelCellDisplay(ws, r, c) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            const cell = ws[addr];
+            if (!cell) return '';
+            return cell.w !== undefined ? cell.w : cell.v;
+        }
+
+        function setExcelCellValue(ws, r, c, value) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            const existing = ws[addr];
+            const cell = { t: 's', v: value };
+            if (existing && existing.s) cell.s = existing.s;
+            ws[addr] = cell;
+        }
+
+        // PRE CALL columns (0-indexed): A=Month,B=Date,C=Day,D=State,E=Area,F=Accno,G=Clinic,H=DrName,I=Class
+        // POST CALL columns: J=Month,K=Date,L=Day,M=State,N=Area,O=Accno,P=Clinic,Q=DrName,R=Class,S=Sales,T=Remarks
+        const EXCEL_PRE = { month: 0, date: 1, day: 2, state: 3, area: 4, clinic: 6, doctor: 7 };
+        const EXCEL_POST = { month: 9, date: 10, day: 11, state: 12, area: 13, clinic: 15, doctor: 16 };
+
+        document.getElementById('excelUploadInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            const genBtn = document.getElementById('generateExcelBtn');
+            if (!file) {
+                uploadedExcelWorkbook = null;
+                genBtn.disabled = true;
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                try {
+                    const data = new Uint8Array(ev.target.result);
+                    uploadedExcelWorkbook = XLSX.read(data, { type: 'array', cellNF: true, cellStyles: true });
+                    genBtn.disabled = false;
+                } catch (err) {
+                    alert("Couldn't read that file — make sure it's a valid Excel file.");
+                    uploadedExcelWorkbook = null;
+                    genBtn.disabled = true;
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        document.getElementById('generateExcelBtn').addEventListener('click', function() {
+            if (!uploadedExcelWorkbook) return;
+
+            const sheetName = uploadedExcelWorkbook.SheetNames[0];
+            const ws = uploadedExcelWorkbook.Sheets[sheetName];
+            const range = XLSX.utils.decode_range(ws['!ref']);
+            const calls = getCalls();
+
+            const matched = [];
+            const unmatched = [];
+
+            calls.forEach(call => {
+                const targetDate = formatDateForExcel(call.id);
+                const targetName = normalizeDoctorNameForExcel(call.doctorName);
+                let matchRow = -1;
+
+                for (let r = range.s.r; r <= range.e.r; r++) {
+                    const rowDoctor = excelCellValue(ws, r, EXCEL_PRE.doctor);
+                    if (!rowDoctor) continue;
+                    const rowDate = excelCellDisplay(ws, r, EXCEL_PRE.date);
+                    if (String(rowDate) === targetDate && normalizeDoctorNameForExcel(rowDoctor) === targetName) {
+                        matchRow = r;
+                        break;
+                    }
+                }
+
+                if (matchRow === -1) {
+                    unmatched.push(call);
+                    return;
+                }
+
+                setExcelCellValue(ws, matchRow, EXCEL_POST.month, excelCellValue(ws, matchRow, EXCEL_PRE.month));
+                setExcelCellValue(ws, matchRow, EXCEL_POST.date, excelCellDisplay(ws, matchRow, EXCEL_PRE.date));
+                setExcelCellValue(ws, matchRow, EXCEL_POST.day, excelCellValue(ws, matchRow, EXCEL_PRE.day));
+                setExcelCellValue(ws, matchRow, EXCEL_POST.state, excelCellValue(ws, matchRow, EXCEL_PRE.state));
+                setExcelCellValue(ws, matchRow, EXCEL_POST.area, excelCellValue(ws, matchRow, EXCEL_PRE.area));
+                setExcelCellValue(ws, matchRow, EXCEL_POST.clinic, excelCellValue(ws, matchRow, EXCEL_PRE.clinic));
+                setExcelCellValue(ws, matchRow, EXCEL_POST.doctor, excelCellValue(ws, matchRow, EXCEL_PRE.doctor));
+
+                matched.push(call);
+            });
+
+            const resultBox = document.getElementById('excelExportResult');
+            resultBox.style.display = 'block';
+            let resultHtml = `<p><strong>${matched.length} of ${calls.length}</strong> logged calls matched and filled.</p>`;
+            if (unmatched.length) {
+                resultHtml += `<p style="margin-top: 8px; color: #fdba74;">Not matched (add these manually):</p><ul style="margin-left: 20px; color: #fdba74;">`;
+                unmatched.forEach(c => {
+                    resultHtml += `<li>${escapeHtml(c.doctorName)} — ${formatDateForExcel(c.id)}</li>`;
+                });
+                resultHtml += '</ul>';
+            }
+            resultBox.innerHTML = resultHtml;
+
+            if (matched.length > 0) {
+                XLSX.writeFile(uploadedExcelWorkbook, 'Pre and Post call Abigail - filled.xlsx');
+            }
         });
 
         // Clear all data
