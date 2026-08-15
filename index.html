@@ -541,6 +541,159 @@
             flex-shrink: 0;
         }
 
+        .pipeline-board {
+            display: flex;
+            gap: 10px;
+            overflow-x: auto;
+            padding-bottom: 6px;
+            margin-bottom: 8px;
+        }
+
+        .pipeline-column {
+            min-width: 130px;
+            flex: 1;
+        }
+
+        .pipeline-column-header {
+            font-size: 0.75em;
+            color: #8a8aa0;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .pipeline-card {
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: transform 0.15s;
+        }
+
+        .pipeline-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .pipeline-card-clinic {
+            font-weight: 700;
+            font-size: 0.9em;
+        }
+
+        .pipeline-card-doctor {
+            font-size: 0.78em;
+            color: #c9c9d9;
+            margin-top: 2px;
+        }
+
+        .pipeline-empty {
+            color: #6a6a80;
+            font-size: 0.8em;
+            padding: 10px 0;
+        }
+
+        .doctor-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #12121f;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+
+        .doctor-row.selected {
+            border-color: #8b7cf6;
+            background: rgba(139, 124, 246, 0.1);
+        }
+
+        .doctor-row-clinic {
+            font-weight: 700;
+            color: #f0f0f5;
+        }
+
+        .doctor-row-detail {
+            font-size: 0.8em;
+            color: #a5a5b8;
+            margin-top: 2px;
+        }
+
+        .overdue-chip {
+            background: rgba(255, 107, 107, 0.18);
+            color: #ff9b9b;
+            font-size: 0.72em;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-weight: 600;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        .stage-select {
+            width: auto;
+            min-height: auto;
+            padding: 6px 10px;
+            border: none;
+            border-radius: 20px;
+            font-size: 0.78em;
+            font-weight: 600;
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+
+        .clinics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 10px;
+        }
+
+        .clinic-card {
+            background: #12121f;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 12px;
+            cursor: pointer;
+            transition: transform 0.15s;
+        }
+
+        .clinic-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .clinic-card-name {
+            font-weight: 700;
+            color: #f0f0f5;
+        }
+
+        .clinic-card-detail {
+            font-size: 0.78em;
+            color: #8a8aa0;
+            margin-top: 4px;
+        }
+
+        .filter-chip {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            background: rgba(139, 124, 246, 0.14);
+            border: 1px solid #8b7cf6;
+            border-radius: 8px;
+            padding: 8px 14px;
+            margin-bottom: 12px;
+            font-size: 0.85em;
+            color: #c9bfff;
+        }
+
+        .chip-clear-btn {
+            width: auto;
+            min-height: auto;
+            padding: 4px 10px;
+            background: rgba(255, 255, 255, 0.1);
+            font-size: 0.85em;
+            margin-top: 0;
+        }
+
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr 1fr;
@@ -1039,6 +1192,32 @@
             <div id="leaderboardList"></div>
         </div>
 
+        <!-- Doctors & Clinics pipeline -->
+        <div class="card">
+            <h2>🗂️ Doctors & Clinics</h2>
+            <p class="muted">Every doctor and clinic you've logged, grouped from your calls — with a status that persists across calls.</p>
+
+            <div class="form-group">
+                <input type="text" id="doctorSearchInput" placeholder="Search doctors or clinics…">
+            </div>
+
+            <div class="filter-chip" id="doctorFilterChip" style="display: none;">
+                <span id="doctorFilterChipText"></span>
+                <button type="button" class="chip-clear-btn" id="clearDoctorFilterBtn">Clear filter ✕</button>
+            </div>
+
+            <p class="muted" style="margin-top: 18px;">Pipeline — where each doctor stands</p>
+            <div class="pipeline-board" id="pipelineBoard"></div>
+
+            <p class="muted" style="margin-top: 18px;">Doctors</p>
+            <div id="doctorsList" class="no-calls-message">
+                No calls logged yet. Doctors will appear here once you log a call.
+            </div>
+
+            <p class="muted" style="margin-top: 18px;">Clinics</p>
+            <div class="clinics-grid" id="clinicsGrid"></div>
+        </div>
+
         <div class="main-grid">
             <!-- Left: Input Daily Call -->
             <div class="card">
@@ -1196,6 +1375,7 @@
     <script>
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
+        const DOCTOR_STAGES_KEY = 'salesTrackerDoctorStages';
 
         const REACTION_LABELS = {
             'very-interested': '⭐ Very Interested',
@@ -1227,11 +1407,22 @@
             { id: 'calls-100', icon: '🏆', label: '100 calls', check: (calls) => calls.length >= 100 }
         ];
 
+        const STAGE_DEFS = [
+            { id: 'cold', label: 'Cold', color: '#8a8aa0', bg: 'rgba(138, 138, 160, 0.14)' },
+            { id: 'contacted', label: 'Contacted', color: '#7dd3fc', bg: 'rgba(56, 189, 248, 0.16)' },
+            { id: 'interested', label: 'Interested', color: '#ffe082', bg: 'rgba(255, 193, 7, 0.16)' },
+            { id: 'trial', label: 'Trial', color: '#c9bfff', bg: 'rgba(139, 124, 246, 0.18)' },
+            { id: 'prescribing', label: 'Prescribing', color: '#86efac', bg: 'rgba(76, 175, 80, 0.18)' }
+        ];
+
         let currentView = 'week';
         let editingCallId = null;
         let exportRange = 'week';
         let lastDeleted = null;
         let undoTimeout = null;
+        let selectedDoctorKey = null;
+        let selectedClinicFilter = null;
+        let doctorSearchTerm = '';
 
         function getCalls() {
             return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
@@ -1239,6 +1430,14 @@
 
         function saveCalls(calls) {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(calls));
+        }
+
+        function getDoctorStages() {
+            return JSON.parse(localStorage.getItem(DOCTOR_STAGES_KEY) || '{}');
+        }
+
+        function saveDoctorStages(stages) {
+            localStorage.setItem(DOCTOR_STAGES_KEY, JSON.stringify(stages));
         }
 
         function escapeHtml(str) {
@@ -1258,6 +1457,60 @@
             const month = String(d.getMonth() + 1).padStart(2, '0');
             const day = String(d.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
+        }
+
+        function doctorKey(call) {
+            return (call.doctorName || '').trim().toLowerCase() + '|' + (call.clinic || '').trim().toLowerCase();
+        }
+
+        function relativeDay(ts) {
+            const days = Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
+            if (days <= 0) return 'today';
+            if (days === 1) return '1 day ago';
+            return days + ' days ago';
+        }
+
+        function matchesSearch(entry, term) {
+            if (!term) return true;
+            const t = term.toLowerCase();
+            return entry.doctorName.toLowerCase().includes(t) || entry.clinic.toLowerCase().includes(t);
+        }
+
+        function buildDoctorSummaries(allCalls) {
+            const stages = getDoctorStages();
+            const todayStr = toISODate(new Date());
+            const map = {};
+
+            allCalls.forEach(c => {
+                const key = doctorKey(c);
+                if (!key.replace('|', '').trim()) return;
+
+                if (!map[key]) {
+                    map[key] = {
+                        key,
+                        doctorName: (c.doctorName || '').trim(),
+                        clinic: (c.clinic || '').trim() || 'No clinic specified',
+                        callCount: 0,
+                        lastContactTs: 0,
+                        hasOverdueFollowUp: false
+                    };
+                }
+
+                const entry = map[key];
+                entry.callCount++;
+                if (c.id > entry.lastContactTs) {
+                    entry.lastContactTs = c.id;
+                    entry.doctorName = (c.doctorName || '').trim();
+                    entry.clinic = (c.clinic || '').trim() || 'No clinic specified';
+                }
+                if (c.followUpDate && c.followUpDate <= todayStr) {
+                    entry.hasOverdueFollowUp = true;
+                }
+            });
+
+            return Object.values(map)
+                .map(entry => Object.assign({}, entry, { stage: stages[entry.key] || 'cold' }))
+                .sort((a, b) => b.lastContactTs - a.lastContactTs);
         }
 
         function getWeekRange(date) {
@@ -1546,6 +1799,42 @@
             else if (btn.dataset.action === 'edit') editCall(id);
         });
 
+        // Doctors & Clinics section
+        document.getElementById('doctorSearchInput').addEventListener('input', function() {
+            doctorSearchTerm = this.value.trim();
+            updateDoctorsSection(getCalls());
+        });
+
+        document.getElementById('pipelineBoard').addEventListener('click', function(e) {
+            const card = e.target.closest('[data-action="select-doctor"]');
+            if (!card) return;
+            selectDoctor(card.dataset.key);
+        });
+
+        document.getElementById('doctorsList').addEventListener('click', function(e) {
+            if (e.target.closest('select')) return;
+            const row = e.target.closest('[data-action="select-doctor"]');
+            if (!row) return;
+            selectDoctor(row.dataset.key);
+        });
+
+        document.getElementById('doctorsList').addEventListener('change', function(e) {
+            const select = e.target.closest('.stage-select');
+            if (!select) return;
+            const stages = getDoctorStages();
+            stages[select.dataset.key] = select.value;
+            saveDoctorStages(stages);
+            updateDisplay();
+        });
+
+        document.getElementById('clinicsGrid').addEventListener('click', function(e) {
+            const card = e.target.closest('[data-action="select-clinic"]');
+            if (!card) return;
+            selectClinic(card.dataset.clinic);
+        });
+
+        document.getElementById('clearDoctorFilterBtn').addEventListener('click', clearDoctorFilter);
+
         // Daily goal input
         function getDailyGoal() {
             const v = parseInt(localStorage.getItem(DAILY_GOAL_KEY), 10);
@@ -1694,7 +1983,8 @@
             updateRecentCalls(viewCalls);
             updateObjectionsList(allObjections);
             updateWinnersList(allWinners, viewCalls.length);
-            updateAllCalls(viewCalls);
+            updateAllCalls(applyDoctorClinicFilter(viewCalls));
+            updateFilterChip();
             updateFollowUps(allCalls);
             updateFollowUpBanner(allCalls);
             updateDailyGoal(allCalls);
@@ -1704,6 +1994,141 @@
             updateLevelTile(allCalls.length);
             updateBadges(allCalls, streakInfo.streak);
             updateLeaderboard(allCalls);
+
+            updateDoctorsSection(allCalls);
+        }
+
+        function applyDoctorClinicFilter(calls) {
+            if (selectedDoctorKey) {
+                return calls.filter(c => doctorKey(c) === selectedDoctorKey);
+            }
+            if (selectedClinicFilter) {
+                return calls.filter(c => (c.clinic || 'No clinic specified') === selectedClinicFilter);
+            }
+            return calls;
+        }
+
+        function updateFilterChip() {
+            const chip = document.getElementById('doctorFilterChip');
+            const text = document.getElementById('doctorFilterChipText');
+
+            if (selectedDoctorKey) {
+                const match = getCalls().find(c => doctorKey(c) === selectedDoctorKey);
+                text.textContent = match
+                    ? `Showing calls for ${match.doctorName} (${match.clinic || 'no clinic'})`
+                    : 'Showing filtered calls';
+                chip.style.display = 'flex';
+            } else if (selectedClinicFilter) {
+                text.textContent = `Showing calls for ${selectedClinicFilter}`;
+                chip.style.display = 'flex';
+            } else {
+                chip.style.display = 'none';
+            }
+        }
+
+        function selectDoctor(key) {
+            selectedDoctorKey = key;
+            selectedClinicFilter = null;
+            updateDisplay();
+            document.getElementById('allCalls').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function selectClinic(clinicName) {
+            selectedClinicFilter = clinicName;
+            selectedDoctorKey = null;
+            updateDisplay();
+            document.getElementById('allCalls').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function clearDoctorFilter() {
+            selectedDoctorKey = null;
+            selectedClinicFilter = null;
+            updateDisplay();
+        }
+
+        function updateDoctorsSection(allCalls) {
+            const summaries = buildDoctorSummaries(allCalls);
+            const filtered = summaries.filter(s => matchesSearch(s, doctorSearchTerm));
+            updatePipelineBoard(filtered);
+            updateDoctorsList(filtered);
+            updateClinicsGrid(filtered);
+        }
+
+        function updatePipelineBoard(summaries) {
+            const board = document.getElementById('pipelineBoard');
+            if (!summaries.length) {
+                board.innerHTML = '<div class="no-calls-message">No doctors yet — log a call to start building your pipeline.</div>';
+                return;
+            }
+
+            let html = '';
+            STAGE_DEFS.forEach(stageDef => {
+                const inStage = summaries.filter(s => s.stage === stageDef.id);
+                html += `<div class="pipeline-column">
+                    <div class="pipeline-column-header">${stageDef.label} · ${inStage.length}</div>`;
+                if (!inStage.length) {
+                    html += '<div class="pipeline-empty">—</div>';
+                } else {
+                    inStage.forEach(s => {
+                        html += `<div class="pipeline-card" data-action="select-doctor" data-key="${escapeHtml(s.key)}" style="background: ${stageDef.bg};">
+                            <div class="pipeline-card-clinic" style="color: ${stageDef.color};">${escapeHtml(s.clinic)}</div>
+                            <div class="pipeline-card-doctor">${escapeHtml(s.doctorName)}</div>
+                        </div>`;
+                    });
+                }
+                html += '</div>';
+            });
+            board.innerHTML = html;
+        }
+
+        function updateDoctorsList(summaries) {
+            const container = document.getElementById('doctorsList');
+            if (!summaries.length) {
+                container.innerHTML = '<div class="no-calls-message">No calls logged yet. Doctors will appear here once you log a call.</div>';
+                return;
+            }
+
+            let html = '';
+            summaries.forEach(s => {
+                const stageDef = STAGE_DEFS.find(d => d.id === s.stage) || STAGE_DEFS[0];
+                html += `<div class="doctor-row${s.key === selectedDoctorKey ? ' selected' : ''}" data-action="select-doctor" data-key="${escapeHtml(s.key)}">
+                    <div class="avatar-circle" style="background: ${stageDef.color};">${escapeHtml(initials(s.doctorName))}</div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div class="doctor-row-clinic">${escapeHtml(s.clinic)}</div>
+                        <div class="doctor-row-detail">${escapeHtml(s.doctorName)} • ${s.callCount} call${s.callCount === 1 ? '' : 's'} • last contact ${relativeDay(s.lastContactTs)}</div>
+                    </div>
+                    ${s.hasOverdueFollowUp ? '<span class="overdue-chip">Follow-up overdue</span>' : ''}
+                    <select class="stage-select" data-key="${escapeHtml(s.key)}" style="background: ${stageDef.bg}; color: ${stageDef.color};">
+                        ${STAGE_DEFS.map(d => `<option value="${d.id}"${d.id === s.stage ? ' selected' : ''}>${d.label}</option>`).join('')}
+                    </select>
+                </div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function updateClinicsGrid(summaries) {
+            const grid = document.getElementById('clinicsGrid');
+            if (!summaries.length) {
+                grid.innerHTML = '<div class="no-calls-message">No clinics yet.</div>';
+                return;
+            }
+
+            const clinics = {};
+            summaries.forEach(s => {
+                if (!clinics[s.clinic]) clinics[s.clinic] = { name: s.clinic, doctorCount: 0, callCount: 0 };
+                clinics[s.clinic].doctorCount++;
+                clinics[s.clinic].callCount += s.callCount;
+            });
+
+            const list = Object.values(clinics).sort((a, b) => b.callCount - a.callCount);
+            let html = '';
+            list.forEach(c => {
+                html += `<div class="clinic-card" data-action="select-clinic" data-clinic="${escapeHtml(c.name)}">
+                    <div class="clinic-card-name">${escapeHtml(c.name)}</div>
+                    <div class="clinic-card-detail">${c.doctorCount} doctor${c.doctorCount === 1 ? '' : 's'} • ${c.callCount} call${c.callCount === 1 ? '' : 's'}</div>
+                </div>`;
+            });
+            grid.innerHTML = html;
         }
 
         function updateCallsProgress(count) {
