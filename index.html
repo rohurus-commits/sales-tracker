@@ -1386,7 +1386,7 @@
         <button type="button" id="undoBtn">Undo</button>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script>
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
@@ -1962,7 +1962,14 @@
         });
 
         // Export to Pre/Post Call Excel
-        let uploadedExcelWorkbook = null;
+        //
+        // This patches the uploaded .xlsx directly at the XML level (it's a zip of XML files)
+        // instead of using a high-level Excel library's read/write, because that approach
+        // (tried first) silently stripped the orange/blue theme-colored header bands from the
+        // ENTIRE sheet on save, not just the rows being edited - a known fidelity gap in
+        // browser Excel libraries' style serialization. Patching XML directly guarantees every
+        // byte outside the specific cells being filled stays untouched.
+        let uploadedExcelBuffer = null;
 
         function normalizeDoctorNameForExcel(name) {
             return String(name || '')
@@ -1973,66 +1980,119 @@
                 .trim();
         }
 
+        const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30); // accounts for Excel's 1900 leap-year bug
+
         function formatDateForExcel(id) {
             const d = new Date(id);
             return `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)}`;
         }
 
-        function excelCellValue(ws, r, c) {
-            const addr = XLSX.utils.encode_cell({ r, c });
-            return ws[addr] ? ws[addr].v : '';
+        function excelSerialToDateStr(serial) {
+            const d = new Date(EXCEL_EPOCH_MS + serial * 86400000);
+            return `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${String(d.getUTCFullYear()).slice(-2)}`;
         }
 
-        function excelCellDisplay(ws, r, c) {
-            const addr = XLSX.utils.encode_cell({ r, c });
-            const cell = ws[addr];
-            if (!cell) return '';
-            return cell.w !== undefined ? cell.w : cell.v;
-        }
-
-        function setExcelCellValue(ws, r, c, value) {
-            const addr = XLSX.utils.encode_cell({ r, c });
-            const existing = ws[addr];
-            const cell = { t: 's', v: value };
-            if (existing && existing.s) cell.s = existing.s;
-            ws[addr] = cell;
-        }
-
-        // PRE CALL columns (0-indexed): A=Month,B=Date,C=Day,D=State,E=Area,F=Accno,G=Clinic,H=DrName,I=Class
+        // PRE CALL columns: A=Month,B=Date,C=Day,D=State,E=Area,F=Accno,G=Clinic,H=DrName,I=Class
         // POST CALL columns: J=Month,K=Date,L=Day,M=State,N=Area,O=Accno,P=Clinic,Q=DrName,R=Class,S=Sales,T=Remarks
+        const EXCEL_COL_LETTERS = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V'];
         const EXCEL_PRE = { month: 0, date: 1, day: 2, state: 3, area: 4, clinic: 6, doctor: 7 };
         const EXCEL_POST = { month: 9, date: 10, day: 11, state: 12, area: 13, clinic: 15, doctor: 16 };
 
-        document.getElementById('excelUploadInput').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            const genBtn = document.getElementById('generateExcelBtn');
-            if (!file) {
-                uploadedExcelWorkbook = null;
-                genBtn.disabled = true;
-                return;
+        function excelColLetterToIndex(letters) {
+            let n = 0;
+            for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+            return n;
+        }
+
+        async function generateFilledExcel(arrayBuffer, calls) {
+            const zip = await JSZip.loadAsync(arrayBuffer);
+
+            const workbookXml = await zip.file('xl/workbook.xml').async('string');
+            const relsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+            const parser = new DOMParser();
+            const wbDoc = parser.parseFromString(workbookXml, 'application/xml');
+            const firstSheetEl = wbDoc.getElementsByTagName('sheet')[0];
+            const rId = firstSheetEl.getAttribute('r:id');
+            const relsDoc = parser.parseFromString(relsXml, 'application/xml');
+            let sheetTarget = null;
+            Array.from(relsDoc.getElementsByTagName('Relationship')).forEach(rel => {
+                if (rel.getAttribute('Id') === rId) sheetTarget = rel.getAttribute('Target');
+            });
+            const sheetPath = 'xl/' + sheetTarget;
+
+            const sharedStringsFile = zip.file('xl/sharedStrings.xml');
+            const sharedStrings = [];
+            if (sharedStringsFile) {
+                const ssDoc = parser.parseFromString(await sharedStringsFile.async('string'), 'application/xml');
+                Array.from(ssDoc.getElementsByTagName('si')).forEach(si => {
+                    sharedStrings.push(Array.from(si.getElementsByTagName('t')).map(t => t.textContent).join(''));
+                });
             }
-            const reader = new FileReader();
-            reader.onload = function(ev) {
-                try {
-                    const data = new Uint8Array(ev.target.result);
-                    uploadedExcelWorkbook = XLSX.read(data, { type: 'array', cellNF: true, cellStyles: true });
-                    genBtn.disabled = false;
-                } catch (err) {
-                    alert("Couldn't read that file — make sure it's a valid Excel file.");
-                    uploadedExcelWorkbook = null;
-                    genBtn.disabled = true;
+
+            const sheetXmlOriginal = await zip.file(sheetPath).async('string');
+            const sheetDoc = parser.parseFromString(sheetXmlOriginal, 'application/xml');
+            const sheetDataEl = sheetDoc.getElementsByTagName('sheetData')[0];
+            const rowEls = Array.from(sheetDataEl.getElementsByTagName('row'));
+
+            function getCellEl(rowEl, colLetter) {
+                const rAttr = rowEl.getAttribute('r');
+                return Array.from(rowEl.getElementsByTagName('c')).find(c => c.getAttribute('r') === colLetter + rAttr);
+            }
+
+            function getOrCreateCellEl(rowEl, colLetter) {
+                const existing = getCellEl(rowEl, colLetter);
+                if (existing) return existing;
+                const rAttr = rowEl.getAttribute('r');
+                const targetIdx = excelColLetterToIndex(colLetter);
+                const newCell = sheetDoc.createElement('c');
+                newCell.setAttribute('r', colLetter + rAttr);
+                let insertBefore = null;
+                for (const c of Array.from(rowEl.getElementsByTagName('c'))) {
+                    const m = c.getAttribute('r').match(/^([A-Z]+)\d+$/);
+                    if (m && excelColLetterToIndex(m[1]) > targetIdx) { insertBefore = c; break; }
                 }
-            };
-            reader.readAsArrayBuffer(file);
-        });
+                rowEl.insertBefore(newCell, insertBefore);
+                return newCell;
+            }
 
-        document.getElementById('generateExcelBtn').addEventListener('click', function() {
-            if (!uploadedExcelWorkbook) return;
+            function cellText(cellEl) {
+                if (!cellEl) return '';
+                const vEl = cellEl.getElementsByTagName('v')[0];
+                if (!vEl) return '';
+                return cellEl.getAttribute('t') === 's' ? (sharedStrings[parseInt(vEl.textContent, 10)] || '') : vEl.textContent;
+            }
 
-            const sheetName = uploadedExcelWorkbook.SheetNames[0];
-            const ws = uploadedExcelWorkbook.Sheets[sheetName];
-            const range = XLSX.utils.decode_range(ws['!ref']);
-            const calls = getCalls();
+            function cellDateStr(cellEl) {
+                if (!cellEl) return '';
+                const vEl = cellEl.getElementsByTagName('v')[0];
+                return vEl ? excelSerialToDateStr(parseFloat(vEl.textContent)) : '';
+            }
+
+            function copyIntoPostCell(rowEl, postField, preField, isDate) {
+                const preCell = getCellEl(rowEl, EXCEL_COL_LETTERS[preField]);
+                if (!preCell) return;
+                const postCell = getOrCreateCellEl(rowEl, EXCEL_COL_LETTERS[postField]);
+                const preV = preCell.getElementsByTagName('v')[0];
+                if (!preV) return;
+
+                let vEl = postCell.getElementsByTagName('v')[0];
+                if (!vEl) {
+                    vEl = sheetDoc.createElement('v');
+                    postCell.appendChild(vEl);
+                }
+                vEl.textContent = preV.textContent;
+
+                if (isDate) {
+                    postCell.removeAttribute('t');
+                    // Only exception to "never touch style": without a matching number format
+                    // the raw Excel serial displays as a meaningless integer, not a date. Copy
+                    // the format from this SAME row's own PRE CALL date cell, nowhere else.
+                    const preStyle = preCell.getAttribute('s');
+                    if (preStyle) postCell.setAttribute('s', preStyle);
+                } else {
+                    postCell.setAttribute('t', 's');
+                }
+            }
 
             const matched = [];
             const unmatched = [];
@@ -2040,48 +2100,103 @@
             calls.forEach(call => {
                 const targetDate = formatDateForExcel(call.id);
                 const targetName = normalizeDoctorNameForExcel(call.doctorName);
-                let matchRow = -1;
+                let matchedRowEl = null;
 
-                for (let r = range.s.r; r <= range.e.r; r++) {
-                    const rowDoctor = excelCellValue(ws, r, EXCEL_PRE.doctor);
-                    if (!rowDoctor) continue;
-                    const rowDate = excelCellDisplay(ws, r, EXCEL_PRE.date);
-                    if (String(rowDate) === targetDate && normalizeDoctorNameForExcel(rowDoctor) === targetName) {
-                        matchRow = r;
+                for (const rowEl of rowEls) {
+                    const doctorCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.doctor]);
+                    const doctorText = cellText(doctorCell);
+                    if (!doctorText) continue;
+                    const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]);
+                    if (cellDateStr(dateCell) === targetDate && normalizeDoctorNameForExcel(doctorText) === targetName) {
+                        matchedRowEl = rowEl;
                         break;
                     }
                 }
 
-                if (matchRow === -1) {
+                if (!matchedRowEl) {
                     unmatched.push(call);
                     return;
                 }
 
-                setExcelCellValue(ws, matchRow, EXCEL_POST.month, excelCellValue(ws, matchRow, EXCEL_PRE.month));
-                setExcelCellValue(ws, matchRow, EXCEL_POST.date, excelCellDisplay(ws, matchRow, EXCEL_PRE.date));
-                setExcelCellValue(ws, matchRow, EXCEL_POST.day, excelCellValue(ws, matchRow, EXCEL_PRE.day));
-                setExcelCellValue(ws, matchRow, EXCEL_POST.state, excelCellValue(ws, matchRow, EXCEL_PRE.state));
-                setExcelCellValue(ws, matchRow, EXCEL_POST.area, excelCellValue(ws, matchRow, EXCEL_PRE.area));
-                setExcelCellValue(ws, matchRow, EXCEL_POST.clinic, excelCellValue(ws, matchRow, EXCEL_PRE.clinic));
-                setExcelCellValue(ws, matchRow, EXCEL_POST.doctor, excelCellValue(ws, matchRow, EXCEL_PRE.doctor));
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.month, EXCEL_PRE.month, false);
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.date, EXCEL_PRE.date, true);
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.day, EXCEL_PRE.day, false);
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.state, EXCEL_PRE.state, false);
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.area, EXCEL_PRE.area, false);
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.clinic, EXCEL_PRE.clinic, false);
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.doctor, EXCEL_PRE.doctor, false);
 
                 matched.push(call);
             });
 
-            const resultBox = document.getElementById('excelExportResult');
-            resultBox.style.display = 'block';
-            let resultHtml = `<p><strong>${matched.length} of ${calls.length}</strong> logged calls matched and filled.</p>`;
-            if (unmatched.length) {
-                resultHtml += `<p style="margin-top: 8px; color: #fdba74;">Not matched (add these manually):</p><ul style="margin-left: 20px; color: #fdba74;">`;
-                unmatched.forEach(c => {
-                    resultHtml += `<li>${escapeHtml(c.doctorName)} — ${formatDateForExcel(c.id)}</li>`;
-                });
-                resultHtml += '</ul>';
-            }
-            resultBox.innerHTML = resultHtml;
-
+            let blob = null;
             if (matched.length > 0) {
-                XLSX.writeFile(uploadedExcelWorkbook, 'Pre and Post call Abigail - filled.xlsx');
+                zip.file(sheetPath, new XMLSerializer().serializeToString(sheetDoc));
+                blob = await zip.generateAsync({ type: 'blob' });
+            }
+
+            return { matched, unmatched, blob };
+        }
+
+        document.getElementById('excelUploadInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            const genBtn = document.getElementById('generateExcelBtn');
+            if (!file) {
+                uploadedExcelBuffer = null;
+                genBtn.disabled = true;
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                uploadedExcelBuffer = ev.target.result;
+                genBtn.disabled = false;
+            };
+            reader.onerror = function() {
+                alert("Couldn't read that file — please try again.");
+                uploadedExcelBuffer = null;
+                genBtn.disabled = true;
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        document.getElementById('generateExcelBtn').addEventListener('click', async function() {
+            if (!uploadedExcelBuffer) return;
+            const btn = this;
+            const originalText = btn.textContent;
+            btn.textContent = 'Generating…';
+            btn.disabled = true;
+
+            try {
+                const calls = getCalls();
+                const { matched, unmatched, blob } = await generateFilledExcel(uploadedExcelBuffer, calls);
+
+                const resultBox = document.getElementById('excelExportResult');
+                resultBox.style.display = 'block';
+                let resultHtml = `<p><strong>${matched.length} of ${calls.length}</strong> logged calls matched and filled.</p>`;
+                if (unmatched.length) {
+                    resultHtml += `<p style="margin-top: 8px; color: #fdba74;">Not matched (add these manually):</p><ul style="margin-left: 20px; color: #fdba74;">`;
+                    unmatched.forEach(c => {
+                        resultHtml += `<li>${escapeHtml(c.doctorName)} — ${formatDateForExcel(c.id)}</li>`;
+                    });
+                    resultHtml += '</ul>';
+                }
+                resultBox.innerHTML = resultHtml;
+
+                if (blob) {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'Pre and Post call Abigail - filled.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }
+            } catch (err) {
+                alert("Couldn't process that file — make sure it's the Excel file you uploaded and try again.");
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
             }
         });
 
