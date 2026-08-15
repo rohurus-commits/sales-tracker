@@ -1179,9 +1179,9 @@
 
         <!-- Badges -->
         <div class="card">
-            <h2>🏅 Badges</h2>
-            <p class="muted" id="badgesSummary">0 of 8 earned</p>
-            <div class="badges-grid" id="badgesGrid"></div>
+            <h2>📞 Call Badges</h2>
+            <p class="muted" id="badgesSummary">0 of 9 earned</p>
+            <div id="badgesGroups"></div>
         </div>
 
         <!-- Personal leaderboard -->
@@ -1397,15 +1397,18 @@
         };
 
         const BADGE_DEFS = [
-            { id: 'first-call', icon: '🎯', label: 'First call', check: (calls) => calls.length >= 1 },
-            { id: 'five-in-a-day', icon: '🔥', label: '5 in a day', check: (calls) => maxCallsInOneDay(calls) >= 5 },
-            { id: 'streak-3', icon: '⚡', label: '3-day streak', check: (calls, streak) => streak >= 3 },
-            { id: 'streak-7', icon: '🌟', label: '7-day streak', check: (calls, streak) => streak >= 7 },
-            { id: 'calls-10', icon: '🥉', label: '10 calls', check: (calls) => calls.length >= 10 },
-            { id: 'calls-25', icon: '🥈', label: '25 calls', check: (calls) => calls.length >= 25 },
-            { id: 'calls-50', icon: '🥇', label: '50 calls', check: (calls) => calls.length >= 50 },
-            { id: 'calls-100', icon: '🏆', label: '100 calls', check: (calls) => calls.length >= 100 }
+            { id: 'first-call', icon: '🎯', label: 'First Call', desc: '1 call', group: 'Daily Performance', check: (calls) => calls.length >= 1 },
+            { id: 'daily-performer', icon: '🔥', label: 'Daily Performer', desc: '8 calls in one day', group: 'Daily Performance', check: (calls) => maxCallsInOneDay(calls) >= 8 },
+            { id: 'daily-champion', icon: '⚡', label: 'Daily Champion', desc: '10 calls in one day', group: 'Daily Performance', check: (calls) => maxCallsInOneDay(calls) >= 10 },
+            { id: 'streak-3', icon: '🔥', label: '3-Day Streak', desc: 'at least 1 call every day for 3 days', group: 'Consistency', check: (calls, streak) => streak >= 3 },
+            { id: 'streak-7', icon: '💥', label: '7-Day Streak', desc: 'at least 1 call every day for 7 days', group: 'Consistency', check: (calls, streak) => streak >= 7 },
+            { id: 'calls-10', icon: '🥉', label: '10 Calls', desc: '10 total calls', group: 'Total Calls', check: (calls) => calls.length >= 10 },
+            { id: 'calls-25', icon: '🥈', label: '25 Calls', desc: '25 total calls', group: 'Total Calls', check: (calls) => calls.length >= 25 },
+            { id: 'calls-50', icon: '🥇', label: '50 Calls', desc: '50 total calls', group: 'Total Calls', check: (calls) => calls.length >= 50 },
+            { id: 'calls-100', icon: '🏆', label: '100 Calls', desc: '100 total calls', group: 'Total Calls', check: (calls) => calls.length >= 100 }
         ];
+
+        const BADGE_GROUPS = ['Daily Performance', 'Consistency', 'Total Calls'];
 
         const STAGE_DEFS = [
             { id: 'cold', label: 'Cold', color: '#8a8aa0', bg: 'rgba(138, 138, 160, 0.14)' },
@@ -2162,18 +2165,25 @@
         }
 
         function updateBadges(allCalls, streak) {
-            const grid = document.getElementById('badgesGrid');
+            const container = document.getElementById('badgesGroups');
             let earnedCount = 0;
             let html = '';
-            BADGE_DEFS.forEach(def => {
-                const earned = def.check(allCalls, streak);
-                if (earned) earnedCount++;
-                html += `<div class="badge${earned ? ' earned' : ''}">
-                    <div class="badge-icon">${def.icon}</div>
-                    <div class="badge-label">${def.label}</div>
-                </div>`;
+
+            BADGE_GROUPS.forEach(group => {
+                const groupBadges = BADGE_DEFS.filter(def => def.group === group);
+                html += `<p class="muted" style="margin-top: 14px; margin-bottom: 8px;">${escapeHtml(group)}</p><div class="badges-grid">`;
+                groupBadges.forEach(def => {
+                    const earned = def.check(allCalls, streak);
+                    if (earned) earnedCount++;
+                    html += `<div class="badge${earned ? ' earned' : ''}" title="${escapeHtml(def.desc)}">
+                        <div class="badge-icon">${def.icon}</div>
+                        <div class="badge-label">${escapeHtml(def.label)}</div>
+                    </div>`;
+                });
+                html += '</div>';
             });
-            grid.innerHTML = html;
+
+            container.innerHTML = html;
             document.getElementById('badgesSummary').textContent = `${earnedCount} of ${BADGE_DEFS.length} earned`;
         }
 
