@@ -2044,7 +2044,11 @@
                 if (existing) return existing;
                 const rAttr = rowEl.getAttribute('r');
                 const targetIdx = excelColLetterToIndex(colLetter);
-                const newCell = sheetDoc.createElement('c');
+                // createElementNS (not createElement) - a plain createElement() on an XML
+                // document creates a no-namespace element, which Excel's strict OOXML parser
+                // treats as foreign/unreadable content and silently "repairs" (rewrites) on
+                // open - stripping calcChain.xml, shared strings, and shrinking styles.xml.
+                const newCell = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'c');
                 newCell.setAttribute('r', colLetter + rAttr);
                 let insertBefore = null;
                 for (const c of Array.from(rowEl.getElementsByTagName('c'))) {
@@ -2077,7 +2081,7 @@
 
                 let vEl = postCell.getElementsByTagName('v')[0];
                 if (!vEl) {
-                    vEl = sheetDoc.createElement('v');
+                    vEl = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'v');
                     postCell.appendChild(vEl);
                 }
                 vEl.textContent = preV.textContent;
