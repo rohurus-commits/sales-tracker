@@ -1172,6 +1172,12 @@
 
         <div class="follow-up-banner" id="followUpBanner"></div>
 
+        <!-- Today's Plan -->
+        <div class="card">
+            <h2>🗓️ Today's Plan</h2>
+            <div id="todaysPlanList" class="no-calls-message">Loading...</div>
+        </div>
+
         <!-- Gamified stat tiles -->
         <div class="tile-row">
             <div class="tile tile-gold">
@@ -1441,6 +1447,23 @@
         let unsubCalls = null;
         let unsubStages = null;
         let unsubGoal = null;
+        let uploadedExcelBuffer = null;
+        let todaysPlanRows = null; // null = no plan loaded yet; array = plan parsed (may be empty)
+        const PLAN_FILE_KEY = 'salesTrackerPlanFile';
+
+        function arrayBufferToBase64(buffer) {
+            let binary = '';
+            const bytes = new Uint8Array(buffer);
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            return btoa(binary);
+        }
+
+        function base64ToArrayBuffer(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes.buffer;
+        }
 
         const REACTION_LABELS = {
             'very-interested': '⭐ Very Interested',
@@ -2140,8 +2163,6 @@
         // ENTIRE sheet on save, not just the rows being edited - a known fidelity gap in
         // browser Excel libraries' style serialization. Patching XML directly guarantees every
         // byte outside the specific cells being filled stays untouched.
-        let uploadedExcelBuffer = null;
-
         function normalizeDoctorNameForExcel(name) {
             return String(name || '')
                 .toLowerCase()
@@ -2175,7 +2196,7 @@
             return n;
         }
 
-        async function generateFilledExcel(arrayBuffer, calls) {
+        async function parseWorkbookSheet(arrayBuffer) {
             const zip = await JSZip.loadAsync(arrayBuffer);
 
             const workbookXml = await zip.file('xl/workbook.xml').async('string');
@@ -2204,6 +2225,48 @@
             const sheetDoc = parser.parseFromString(sheetXmlOriginal, 'application/xml');
             const sheetDataEl = sheetDoc.getElementsByTagName('sheetData')[0];
             const rowEls = Array.from(sheetDataEl.getElementsByTagName('row'));
+
+            return { zip, parser, sheetPath, sharedStrings, sheetDoc, rowEls };
+        }
+
+        function getCellEl(rowEl, colLetter) {
+            const rAttr = rowEl.getAttribute('r');
+            return Array.from(rowEl.getElementsByTagName('c')).find(c => c.getAttribute('r') === colLetter + rAttr);
+        }
+
+        function cellDateStr(cellEl) {
+            if (!cellEl) return '';
+            const vEl = cellEl.getElementsByTagName('v')[0];
+            return vEl ? excelSerialToDateStr(parseFloat(vEl.textContent)) : '';
+        }
+
+        function cellTextFromSharedStrings(cellEl, sharedStrings) {
+            if (!cellEl) return '';
+            const vEl = cellEl.getElementsByTagName('v')[0];
+            if (!vEl) return '';
+            return cellEl.getAttribute('t') === 's' ? (sharedStrings[parseInt(vEl.textContent, 10)] || '') : vEl.textContent;
+        }
+
+        async function getTodaysPlanRows() {
+            if (!uploadedExcelBuffer) return [];
+            const { sharedStrings, rowEls } = await parseWorkbookSheet(uploadedExcelBuffer);
+            const todayStr = formatDateForExcel(Date.now());
+            const rows = [];
+            rowEls.forEach(rowEl => {
+                const doctorCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.doctor]);
+                const doctorName = cellTextFromSharedStrings(doctorCell, sharedStrings);
+                if (!doctorName) return;
+                const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]);
+                if (cellDateStr(dateCell) !== todayStr) return;
+                const clinicCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.clinic]);
+                const clinic = cellTextFromSharedStrings(clinicCell, sharedStrings);
+                rows.push({ doctorName, clinic });
+            });
+            return rows;
+        }
+
+        async function generateFilledExcel(arrayBuffer, calls) {
+            const { zip, sheetPath, sharedStrings, sheetDoc, rowEls } = await parseWorkbookSheet(arrayBuffer);
 
             function getCellEl(rowEl, colLetter) {
                 const rAttr = rowEl.getAttribute('r');
@@ -2328,6 +2391,16 @@
             reader.onload = function(ev) {
                 uploadedExcelBuffer = ev.target.result;
                 genBtn.disabled = false;
+                try {
+                    localStorage.setItem(PLAN_FILE_KEY, JSON.stringify({
+                        fileName: file.name,
+                        uploadedAt: Date.now(),
+                        buffer: arrayBufferToBase64(uploadedExcelBuffer)
+                    }));
+                } catch (err) {
+                    console.error('Could not save plan file for reuse across reloads:', err);
+                }
+                refreshTodaysPlanFromBuffer();
             };
             reader.onerror = function() {
                 alert("Couldn't read that file — please try again.");
@@ -2431,7 +2504,75 @@
             updateLeaderboard(allCalls);
 
             updateDoctorsSection(allCalls);
+            updateTodaysPlan();
         }
+
+        async function refreshTodaysPlanFromBuffer() {
+            if (!uploadedExcelBuffer) {
+                todaysPlanRows = null;
+                updateTodaysPlan();
+                return;
+            }
+            try {
+                todaysPlanRows = await getTodaysPlanRows();
+            } catch (err) {
+                console.error("Could not read plan file for Today's Plan:", err);
+                todaysPlanRows = null;
+            }
+            updateTodaysPlan();
+        }
+
+        function updateTodaysPlan() {
+            const container = document.getElementById('todaysPlanList');
+            if (!container) return;
+
+            if (todaysPlanRows === null) {
+                container.className = 'no-calls-message';
+                container.innerHTML = uploadedExcelBuffer
+                    ? 'Reading your plan file…'
+                    : 'Upload your Pre/Post Call Excel file to see who\'s scheduled today.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>';
+                const scrollBtn = document.getElementById('scrollToUploadBtn');
+                if (scrollBtn) {
+                    scrollBtn.addEventListener('click', function() {
+                        document.getElementById('excelUploadInput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                }
+                return;
+            }
+
+            if (todaysPlanRows.length === 0) {
+                container.className = 'no-calls-message';
+                container.innerHTML = 'Nothing planned for today.';
+                return;
+            }
+
+            container.className = '';
+            const todayStr = formatDateForExcel(Date.now());
+            const calls = getCalls();
+            let html = '';
+            todaysPlanRows.forEach((row, idx) => {
+                const normRow = normalizeDoctorNameForExcel(row.doctorName);
+                const done = calls.some(c => normalizeDoctorNameForExcel(c.doctorName) === normRow && formatDateForExcel(c.id) === todayStr);
+                html += `<div class="counter-item"${done ? ' style="opacity:0.55;"' : ''}>
+                    <h4>${escapeHtml(row.clinic) || 'No clinic specified'}</h4>
+                    <p>${escapeHtml(row.doctorName)}</p>
+                    ${done
+                        ? '<span class="success-rate">✓ Logged today</span>'
+                        : `<button type="button" class="secondary plan-log-btn" data-plan-idx="${idx}" style="margin-top:8px;">Log this call</button>`}
+                </div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        document.getElementById('todaysPlanList').addEventListener('click', function(e) {
+            const btn = e.target.closest('.plan-log-btn');
+            if (!btn || todaysPlanRows === null) return;
+            const row = todaysPlanRows[parseInt(btn.dataset.planIdx, 10)];
+            if (!row) return;
+            document.getElementById('doctorName').value = row.doctorName;
+            document.getElementById('clinic').value = row.clinic;
+            document.getElementById('doctorName').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
 
         function applyDoctorClinicFilter(calls) {
             if (selectedDoctorKey) {
@@ -2789,6 +2930,21 @@
             document.getElementById('todayGoalFill').style.width = Math.min((todayCount / goal) * 100, 100) + '%';
             document.getElementById('todayGoalBox').classList.toggle('goal-met', todayCount >= goal);
         }
+
+        // Restore a previously-uploaded plan file, if any, so the user doesn't have to
+        // re-upload it every page load - only when a new week's plan arrives.
+        (function restorePlanFileFromStorage() {
+            try {
+                const raw = localStorage.getItem(PLAN_FILE_KEY);
+                if (!raw) return;
+                const saved = JSON.parse(raw);
+                uploadedExcelBuffer = base64ToArrayBuffer(saved.buffer);
+                document.getElementById('generateExcelBtn').disabled = false;
+            } catch (err) {
+                console.error('Could not restore saved plan file:', err);
+            }
+        })();
+        refreshTodaysPlanFromBuffer();
 
         // Initial load
         updateDisplay();
