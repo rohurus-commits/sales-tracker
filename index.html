@@ -2786,8 +2786,25 @@
             const removeBtn = e.target.closest('.manual-plan-remove-btn');
             if (removeBtn) {
                 const entryId = removeBtn.dataset.entryId;
-                const entry = getManualPlanEntries().find(e2 => String(e2.id) === entryId);
-                if (!confirm(`Remove ${entry ? entry.clinic : 'this hospital'} from your plan?`)) return;
+                // Tap-twice confirmation instead of window.confirm() - on some iOS versions,
+                // confirm() silently resolves true with no dialog shown at all when the app is
+                // running in standalone/home-screen mode, which made this button delete
+                // instantly with no way to back out. This works identically everywhere.
+                if (removeBtn.dataset.armed !== 'true') {
+                    removeBtn.dataset.armed = 'true';
+                    removeBtn.textContent = 'Confirm?';
+                    removeBtn.style.background = 'rgba(226, 75, 74, 0.35)';
+                    removeBtn.style.color = '#ffb3b0';
+                    clearTimeout(removeBtn._armTimeout);
+                    removeBtn._armTimeout = setTimeout(function() {
+                        removeBtn.dataset.armed = 'false';
+                        removeBtn.textContent = '✕';
+                        removeBtn.style.background = '';
+                        removeBtn.style.color = '';
+                    }, 3000);
+                    return;
+                }
+                clearTimeout(removeBtn._armTimeout);
                 saveManualPlanEntries(getManualPlanEntries().filter(e2 => String(e2.id) !== entryId));
                 updateWeekPlan(0);
                 updateWeekPlan(1);
