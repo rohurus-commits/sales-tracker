@@ -1461,6 +1461,7 @@
         let unsubGoal = null;
         let uploadedExcelBuffer = null;
         let weekPlanDays = null; // null = no plan loaded yet; array of 5 Mon-Fri day objects once parsed
+        let planFileLatestDateMs = null; // latest PRE CALL date found anywhere in the uploaded file - used to nudge for a re-upload if it doesn't reach the current week
         const PLAN_FILE_KEY = 'salesTrackerPlanFile';
         const MANUAL_PLAN_KEY = 'salesTrackerManualPlanEntries';
         let cachedManualPlanEntries = JSON.parse(localStorage.getItem(MANUAL_PLAN_KEY) || '[]');
@@ -2292,6 +2293,13 @@
             return vEl ? excelSerialToDateStr(parseFloat(vEl.textContent)) : '';
         }
 
+        function cellDateMs(cellEl) {
+            if (!cellEl) return null;
+            const vEl = cellEl.getElementsByTagName('v')[0];
+            if (!vEl) return null;
+            return EXCEL_EPOCH_MS + parseFloat(vEl.textContent) * 86400000;
+        }
+
         function cellTextFromSharedStrings(cellEl, sharedStrings) {
             if (!cellEl) return '';
             const vEl = cellEl.getElementsByTagName('v')[0];
@@ -2338,6 +2346,7 @@
 
         async function getWeekPlanDays() {
             const weekdays = buildWeekSkeleton();
+            planFileLatestDateMs = null;
 
             if (!uploadedExcelBuffer) return weekdays;
 
@@ -2347,6 +2356,13 @@
                 const doctorName = cellTextFromSharedStrings(doctorCell, sharedStrings);
                 if (!doctorName) return;
                 const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]);
+                // Track the latest PRE CALL date anywhere in the file (not just this week's),
+                // regardless of whether this row lands in the displayed week - used afterwards
+                // to nudge for a re-upload if the whole file predates the current week.
+                const rowDateMs = cellDateMs(dateCell);
+                if (rowDateMs !== null && (planFileLatestDateMs === null || rowDateMs > planFileLatestDateMs)) {
+                    planFileLatestDateMs = rowDateMs;
+                }
                 const rowDateStr = cellDateStr(dateCell);
                 const weekday = weekdays.find(w => w.dateStr === rowDateStr);
                 if (!weekday) return;
@@ -2650,6 +2666,11 @@
                 html += `<div class="no-calls-message" style="margin-bottom:10px;">${uploadedExcelBuffer
                     ? 'Reading your plan file…'
                     : 'Upload your Pre/Post Call Excel file to also see this week\'s schedule from it.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>'}</div>`;
+            } else if (planFileLatestDateMs !== null && planFileLatestDateMs < dates[0].getTime()) {
+                // The whole uploaded file's latest PRE CALL date is before this week's Monday -
+                // it's very likely last week's (or older) plan, not a hard proof, so this is
+                // worded as a nudge rather than an error.
+                html += `<div class="no-calls-message" style="margin-bottom:10px;">This plan file doesn't seem to cover this week — it might be an older upload. Consider uploading the latest version.<br><button type="button" class="secondary" id="scrollToUploadBtnStale" style="margin-top:10px;">Go to upload</button></div>`;
             }
 
             html += '<div style="display:flex; flex-direction:column; gap:10px;">';
@@ -2697,12 +2718,14 @@
             html += '</div>';
             container.innerHTML = html;
 
-            const scrollBtn = document.getElementById('scrollToUploadBtn');
-            if (scrollBtn) {
-                scrollBtn.addEventListener('click', function() {
-                    document.getElementById('excelUploadInput').scrollIntoView({ behavior: 'smooth', block: 'start' });
-                });
-            }
+            ['scrollToUploadBtn', 'scrollToUploadBtnStale'].forEach(function(id) {
+                const scrollBtn = document.getElementById(id);
+                if (scrollBtn) {
+                    scrollBtn.addEventListener('click', function() {
+                        document.getElementById('excelUploadInput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                }
+            });
         }
 
         document.getElementById('weekPlanList').addEventListener('click', function(e) {
