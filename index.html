@@ -1172,10 +1172,11 @@
 
         <div class="follow-up-banner" id="followUpBanner"></div>
 
-        <!-- Today's Plan -->
+        <!-- This week's plan -->
         <div class="card">
-            <h2>🗓️ Today's Plan</h2>
-            <div id="todaysPlanList" class="no-calls-message">Loading...</div>
+            <h2>🗓️ This week's plan</h2>
+            <p class="muted" id="weekPlanRange" style="margin-top:-6px; margin-bottom:12px; font-size:0.85em;"></p>
+            <div id="weekPlanList" class="no-calls-message">Loading...</div>
         </div>
 
         <!-- Gamified stat tiles -->
@@ -1448,7 +1449,7 @@
         let unsubStages = null;
         let unsubGoal = null;
         let uploadedExcelBuffer = null;
-        let todaysPlanRows = null; // null = no plan loaded yet; array = plan parsed (may be empty)
+        let weekPlanDays = null; // null = no plan loaded yet; array of 5 Mon-Fri day objects once parsed
         const PLAN_FILE_KEY = 'salesTrackerPlanFile';
 
         function arrayBufferToBase64(buffer) {
@@ -2247,22 +2248,61 @@
             return cellEl.getAttribute('t') === 's' ? (sharedStrings[parseInt(vEl.textContent, 10)] || '') : vEl.textContent;
         }
 
-        async function getTodaysPlanRows() {
-            if (!uploadedExcelBuffer) return [];
+        function getThisWeekMonFri() {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const day = today.getDay();
+            // Same Monday-finding arithmetic as getWeekRange() (line ~1720) - deliberately
+            // stops at Friday (5 dates) instead of that function's Mon-Sun range.
+            const diff = (day === 0 ? -6 : 1) - day;
+            const monday = new Date(today);
+            monday.setDate(today.getDate() + diff);
+            const dates = [];
+            for (let i = 0; i < 5; i++) {
+                const d = new Date(monday);
+                d.setDate(monday.getDate() + i);
+                dates.push(d);
+            }
+            return { dates, today };
+        }
+
+        function getWeekdayLabel(date) {
+            const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            return `${DAY_ABBR[date.getDay()]} ${date.getDate()}/${date.getMonth() + 1}`;
+        }
+
+        async function getWeekPlanDays() {
+            const { dates, today } = getThisWeekMonFri();
+            const weekdays = dates.map(d => ({
+                dateStr: formatDateForExcel(d.getTime()),
+                label: getWeekdayLabel(d),
+                isToday: d.getTime() === today.getTime(),
+                isPast: d.getTime() < today.getTime(),
+                clinics: []
+            }));
+
+            if (!uploadedExcelBuffer) return weekdays;
+
             const { sharedStrings, rowEls } = await parseWorkbookSheet(uploadedExcelBuffer);
-            const todayStr = formatDateForExcel(Date.now());
-            const rows = [];
             rowEls.forEach(rowEl => {
                 const doctorCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.doctor]);
                 const doctorName = cellTextFromSharedStrings(doctorCell, sharedStrings);
                 if (!doctorName) return;
                 const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]);
-                if (cellDateStr(dateCell) !== todayStr) return;
+                const rowDateStr = cellDateStr(dateCell);
+                const weekday = weekdays.find(w => w.dateStr === rowDateStr);
+                if (!weekday) return;
                 const clinicCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.clinic]);
                 const clinic = cellTextFromSharedStrings(clinicCell, sharedStrings);
-                rows.push({ doctorName, clinic });
+                let clinicEntry = weekday.clinics.find(c => c.clinic === clinic);
+                if (!clinicEntry) {
+                    clinicEntry = { clinic, doctors: [] };
+                    weekday.clinics.push(clinicEntry);
+                }
+                clinicEntry.doctors.push(doctorName);
             });
-            return rows;
+
+            return weekdays;
         }
 
         async function generateFilledExcel(arrayBuffer, calls) {
@@ -2504,33 +2544,39 @@
             updateLeaderboard(allCalls);
 
             updateDoctorsSection(allCalls);
-            updateTodaysPlan();
+            updateWeekPlan();
         }
 
         async function refreshTodaysPlanFromBuffer() {
             if (!uploadedExcelBuffer) {
-                todaysPlanRows = null;
-                updateTodaysPlan();
+                weekPlanDays = null;
+                updateWeekPlan();
                 return;
             }
             try {
-                todaysPlanRows = await getTodaysPlanRows();
+                weekPlanDays = await getWeekPlanDays();
             } catch (err) {
-                console.error("Could not read plan file for Today's Plan:", err);
-                todaysPlanRows = null;
+                console.error("Could not read plan file for This week's plan:", err);
+                weekPlanDays = null;
             }
-            updateTodaysPlan();
+            updateWeekPlan();
         }
 
-        function updateTodaysPlan() {
-            const container = document.getElementById('todaysPlanList');
+        function updateWeekPlan() {
+            const rangeEl = document.getElementById('weekPlanRange');
+            if (rangeEl) {
+                const { dates } = getThisWeekMonFri();
+                rangeEl.textContent = `${getWeekdayLabel(dates[0])} – ${getWeekdayLabel(dates[4])}`;
+            }
+
+            const container = document.getElementById('weekPlanList');
             if (!container) return;
 
-            if (todaysPlanRows === null) {
+            if (weekPlanDays === null) {
                 container.className = 'no-calls-message';
                 container.innerHTML = uploadedExcelBuffer
                     ? 'Reading your plan file…'
-                    : 'Upload your Pre/Post Call Excel file to see who\'s scheduled today.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>';
+                    : 'Upload your Pre/Post Call Excel file to see this week\'s schedule.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>';
                 const scrollBtn = document.getElementById('scrollToUploadBtn');
                 if (scrollBtn) {
                     scrollBtn.addEventListener('click', function() {
@@ -2540,37 +2586,56 @@
                 return;
             }
 
-            if (todaysPlanRows.length === 0) {
-                container.className = 'no-calls-message';
-                container.innerHTML = 'Nothing planned for today.';
-                return;
-            }
-
             container.className = '';
-            const todayStr = formatDateForExcel(Date.now());
             const calls = getCalls();
-            let html = '';
-            todaysPlanRows.forEach((row, idx) => {
-                const normRow = normalizeDoctorNameForExcel(row.doctorName);
-                const done = calls.some(c => normalizeDoctorNameForExcel(c.doctorName) === normRow && formatDateForExcel(c.id) === todayStr);
-                html += `<div class="counter-item"${done ? ' style="opacity:0.55;"' : ''}>
-                    <h4>${escapeHtml(row.clinic) || 'No clinic specified'}</h4>
-                    <p>${escapeHtml(row.doctorName)}</p>
-                    ${done
-                        ? '<span class="success-rate">✓ Logged today</span>'
-                        : `<button type="button" class="secondary plan-log-btn" data-plan-idx="${idx}" style="margin-top:8px;">Log this call</button>`}
-                </div>`;
+            let html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+
+            weekPlanDays.forEach((day, dayIdx) => {
+                if (day.clinics.length === 0) {
+                    html += `<div style="display:flex; align-items:baseline; gap:10px; padding:6px 2px;">
+                        <span class="muted" style="font-size:0.82em; min-width:76px;">${escapeHtml(day.label)}</span>
+                        <span class="muted" style="font-size:0.85em;">Nothing planned</span>
+                    </div>`;
+                    return;
+                }
+                html += `<div><div class="muted" style="font-size:0.82em; margin-bottom:6px;">${escapeHtml(day.label)}</div>`;
+                day.clinics.forEach((clinicEntry, clinicIdx) => {
+                    html += `<div class="counter-item" style="margin-bottom:8px;">
+                        <h4>${escapeHtml(clinicEntry.clinic) || 'No clinic specified'}</h4>`;
+                    clinicEntry.doctors.forEach((doctorName, doctorIdx) => {
+                        const normDoc = normalizeDoctorNameForExcel(doctorName);
+                        const done = calls.some(c => normalizeDoctorNameForExcel(c.doctorName) === normDoc && formatDateForExcel(c.id) === day.dateStr);
+                        let statusHtml = '';
+                        if (done) {
+                            statusHtml = '<span class="success-rate" style="padding:3px 10px; font-size:0.78em;">✓ Logged</span>';
+                        } else if (day.isToday) {
+                            statusHtml = `<button type="button" class="secondary plan-log-btn" data-day="${dayIdx}" data-clinic="${clinicIdx}" data-doctor="${doctorIdx}" style="padding:5px 12px; font-size:0.78em;">Log this call</button>`;
+                        } else if (day.isPast) {
+                            statusHtml = '<span class="muted" style="font-size:0.78em;">Not logged</span>';
+                        }
+                        html += `<div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0;">
+                            <span style="color:#8a8aa0; font-size:0.76em;">${escapeHtml(doctorName)}</span>
+                            ${statusHtml}
+                        </div>`;
+                    });
+                    html += `</div>`;
+                });
+                html += `</div>`;
             });
+
+            html += '</div>';
             container.innerHTML = html;
         }
 
-        document.getElementById('todaysPlanList').addEventListener('click', function(e) {
+        document.getElementById('weekPlanList').addEventListener('click', function(e) {
             const btn = e.target.closest('.plan-log-btn');
-            if (!btn || todaysPlanRows === null) return;
-            const row = todaysPlanRows[parseInt(btn.dataset.planIdx, 10)];
-            if (!row) return;
-            document.getElementById('doctorName').value = row.doctorName;
-            document.getElementById('clinic').value = row.clinic;
+            if (!btn || weekPlanDays === null) return;
+            const day = weekPlanDays[parseInt(btn.dataset.day, 10)];
+            const clinicEntry = day && day.clinics[parseInt(btn.dataset.clinic, 10)];
+            const doctorName = clinicEntry && clinicEntry.doctors[parseInt(btn.dataset.doctor, 10)];
+            if (!doctorName) return;
+            document.getElementById('doctorName').value = doctorName;
+            document.getElementById('clinic').value = clinicEntry.clinic;
             document.getElementById('doctorName').scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
 
