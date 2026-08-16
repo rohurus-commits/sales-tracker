@@ -1177,6 +1177,17 @@
             <h2>🗓️ This week's plan</h2>
             <p class="muted" id="weekPlanRange" style="margin-top:-6px; margin-bottom:12px; font-size:0.85em;"></p>
             <div id="weekPlanList" class="no-calls-message">Loading...</div>
+            <div style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                <div class="form-group" style="margin:0; flex:0 0 auto;">
+                    <label style="font-size:0.8em;">Day</label>
+                    <select id="manualPlanDaySelect"></select>
+                </div>
+                <div class="form-group" style="margin:0; flex:1 1 160px;">
+                    <label style="font-size:0.8em;">Hospital name</label>
+                    <input type="text" id="manualPlanClinicInput" placeholder="e.g., KPJ Damansara">
+                </div>
+                <button type="button" class="secondary" id="addManualPlanBtn" style="margin:0;">+ Add</button>
+            </div>
         </div>
 
         <!-- Gamified stat tiles -->
@@ -1451,6 +1462,9 @@
         let uploadedExcelBuffer = null;
         let weekPlanDays = null; // null = no plan loaded yet; array of 5 Mon-Fri day objects once parsed
         const PLAN_FILE_KEY = 'salesTrackerPlanFile';
+        const MANUAL_PLAN_KEY = 'salesTrackerManualPlanEntries';
+        let cachedManualPlanEntries = JSON.parse(localStorage.getItem(MANUAL_PLAN_KEY) || '[]');
+        let unsubManualPlan = null;
 
         function arrayBufferToBase64(buffer) {
             let binary = '';
@@ -1542,6 +1556,32 @@
             }
         }
 
+        function getManualPlanEntries() {
+            return cachedManualPlanEntries;
+        }
+
+        function saveManualPlanEntries(entries) {
+            const previousById = new Map(cachedManualPlanEntries.map(e => [String(e.id), e]));
+            cachedManualPlanEntries = entries;
+            localStorage.setItem(MANUAL_PLAN_KEY, JSON.stringify(entries));
+            if (currentUser) {
+                const entriesRef = db.collection('users').doc(currentUser.uid).collection('manualPlan');
+                const batch = db.batch();
+                const currentIds = new Set(entries.map(e => String(e.id)));
+                previousById.forEach((_, id) => {
+                    if (!currentIds.has(id)) batch.delete(entriesRef.doc(id));
+                });
+                entries.forEach(e => {
+                    const id = String(e.id);
+                    const prev = previousById.get(id);
+                    if (!prev || JSON.stringify(prev) !== JSON.stringify(e)) {
+                        batch.set(entriesRef.doc(id), e);
+                    }
+                });
+                batch.commit().catch(err => console.error('Sync to cloud failed:', err));
+            }
+        }
+
         function getDoctorStages() {
             return cachedDoctorStages;
         }
@@ -1623,12 +1663,22 @@
             }, function(err) {
                 console.error('Daily goal sync error:', err);
             });
+
+            const manualPlanRef = db.collection('users').doc(uid).collection('manualPlan');
+            unsubManualPlan = manualPlanRef.onSnapshot(function(snapshot) {
+                cachedManualPlanEntries = snapshot.docs.map(d => d.data());
+                localStorage.setItem(MANUAL_PLAN_KEY, JSON.stringify(cachedManualPlanEntries));
+                updateWeekPlan();
+            }, function(err) {
+                console.error('Manual plan sync error:', err);
+            });
         }
 
         function detachFirestoreListeners() {
             if (unsubCalls) { unsubCalls(); unsubCalls = null; }
             if (unsubStages) { unsubStages(); unsubStages = null; }
             if (unsubGoal) { unsubGoal(); unsubGoal = null; }
+            if (unsubManualPlan) { unsubManualPlan(); unsubManualPlan = null; }
         }
 
         firebase.auth().onAuthStateChanged(function(user) {
@@ -1641,6 +1691,7 @@
                 cachedCalls = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
                 cachedDoctorStages = JSON.parse(localStorage.getItem(DOCTOR_STAGES_KEY) || '{}');
                 cachedDailyGoal = null;
+                cachedManualPlanEntries = JSON.parse(localStorage.getItem(MANUAL_PLAN_KEY) || '[]');
                 updateDisplay();
             }
         });
@@ -2271,15 +2322,22 @@
             return `${DAY_ABBR[date.getDay()]} ${date.getDate()}/${date.getMonth() + 1}`;
         }
 
-        async function getWeekPlanDays() {
+        // The 5-day Mon-Fri shape with no Excel data in it yet - shared by getWeekPlanDays()
+        // (which fills in Excel-sourced clinics) and updateWeekPlan()'s fallback when no Excel
+        // file has been uploaded, so manually-added hospitals still render without one.
+        function buildWeekSkeleton() {
             const { dates, today } = getThisWeekMonFri();
-            const weekdays = dates.map(d => ({
+            return dates.map(d => ({
                 dateStr: formatDateForExcel(d.getTime()),
                 label: getWeekdayLabel(d),
                 isToday: d.getTime() === today.getTime(),
                 isPast: d.getTime() < today.getTime(),
                 clinics: []
             }));
+        }
+
+        async function getWeekPlanDays() {
+            const weekdays = buildWeekSkeleton();
 
             if (!uploadedExcelBuffer) return weekdays;
 
@@ -2564,34 +2622,41 @@
 
         function updateWeekPlan() {
             const rangeEl = document.getElementById('weekPlanRange');
+            const { dates } = getThisWeekMonFri();
             if (rangeEl) {
-                const { dates } = getThisWeekMonFri();
                 rangeEl.textContent = `${getWeekdayLabel(dates[0])} – ${getWeekdayLabel(dates[4])}`;
             }
 
             const container = document.getElementById('weekPlanList');
             if (!container) return;
 
-            if (weekPlanDays === null) {
-                container.className = 'no-calls-message';
-                container.innerHTML = uploadedExcelBuffer
-                    ? 'Reading your plan file…'
-                    : 'Upload your Pre/Post Call Excel file to see this week\'s schedule.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>';
-                const scrollBtn = document.getElementById('scrollToUploadBtn');
-                if (scrollBtn) {
-                    scrollBtn.addEventListener('click', function() {
-                        document.getElementById('excelUploadInput').scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    });
-                }
-                return;
+            // weekPlanDays is only null before an Excel file has ever been read (or while one
+            // is being read); manually-added hospitals don't depend on it, so fall back to a
+            // plain Mon-Fri skeleton rather than blocking the whole card on an upload.
+            const days = weekPlanDays || buildWeekSkeleton();
+            const manualEntries = getManualPlanEntries();
+            const calls = getCalls();
+            container.className = '';
+            let html = '';
+
+            const daySelect = document.getElementById('manualPlanDaySelect');
+            if (daySelect) {
+                const prevValue = daySelect.value;
+                daySelect.innerHTML = days.map(d => `<option value="${d.dateStr}">${escapeHtml(d.label)}</option>`).join('');
+                if (days.some(d => d.dateStr === prevValue)) daySelect.value = prevValue;
             }
 
-            container.className = '';
-            const calls = getCalls();
-            let html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+            if (weekPlanDays === null) {
+                html += `<div class="no-calls-message" style="margin-bottom:10px;">${uploadedExcelBuffer
+                    ? 'Reading your plan file…'
+                    : 'Upload your Pre/Post Call Excel file to also see this week\'s schedule from it.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>'}</div>`;
+            }
 
-            weekPlanDays.forEach((day, dayIdx) => {
-                if (day.clinics.length === 0) {
+            html += '<div style="display:flex; flex-direction:column; gap:10px;">';
+
+            days.forEach((day, dayIdx) => {
+                const dayManualEntries = manualEntries.filter(e => e.dateStr === day.dateStr);
+                if (day.clinics.length === 0 && dayManualEntries.length === 0) {
                     html += `<div style="display:flex; align-items:baseline; gap:10px; padding:6px 2px;">
                         <span class="muted" style="font-size:0.82em; min-width:76px;">${escapeHtml(day.label)}</span>
                         <span class="muted" style="font-size:0.85em;">Nothing planned</span>
@@ -2620,14 +2685,34 @@
                     });
                     html += `</div>`;
                 });
+                dayManualEntries.forEach(entry => {
+                    html += `<div class="counter-item" style="margin-bottom:8px; display:flex; align-items:center; justify-content:space-between;">
+                        <h4 style="margin-bottom:0;">${escapeHtml(entry.clinic) || 'No clinic specified'}</h4>
+                        <button type="button" class="secondary manual-plan-remove-btn" data-entry-id="${entry.id}" aria-label="Remove ${escapeHtml(entry.clinic)}" style="padding:4px 10px; font-size:0.78em;">✕</button>
+                    </div>`;
+                });
                 html += `</div>`;
             });
 
             html += '</div>';
             container.innerHTML = html;
+
+            const scrollBtn = document.getElementById('scrollToUploadBtn');
+            if (scrollBtn) {
+                scrollBtn.addEventListener('click', function() {
+                    document.getElementById('excelUploadInput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            }
         }
 
         document.getElementById('weekPlanList').addEventListener('click', function(e) {
+            const removeBtn = e.target.closest('.manual-plan-remove-btn');
+            if (removeBtn) {
+                const entryId = removeBtn.dataset.entryId;
+                saveManualPlanEntries(getManualPlanEntries().filter(entry => String(entry.id) !== entryId));
+                updateWeekPlan();
+                return;
+            }
             const btn = e.target.closest('.plan-log-btn');
             if (!btn || weekPlanDays === null) return;
             const day = weekPlanDays[parseInt(btn.dataset.day, 10)];
@@ -2637,6 +2722,19 @@
             document.getElementById('doctorName').value = doctorName;
             document.getElementById('clinic').value = clinicEntry.clinic;
             document.getElementById('doctorName').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+
+        document.getElementById('addManualPlanBtn').addEventListener('click', function() {
+            const daySelect = document.getElementById('manualPlanDaySelect');
+            const clinicInput = document.getElementById('manualPlanClinicInput');
+            const clinic = clinicInput.value.trim();
+            if (!clinic) {
+                alert('Enter a hospital name first.');
+                return;
+            }
+            saveManualPlanEntries(getManualPlanEntries().concat([{ id: Date.now(), dateStr: daySelect.value, clinic }]));
+            clinicInput.value = '';
+            updateWeekPlan();
         });
 
         function applyDoctorClinicFilter(calls) {
