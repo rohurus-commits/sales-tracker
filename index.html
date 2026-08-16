@@ -1190,6 +1190,24 @@
             </div>
         </div>
 
+        <!-- Next week's plan - weekend-only preview, hidden the rest of the week -->
+        <div class="card" id="nextWeekPlanCard" style="display:none;">
+            <h2>🗓️ Next week's plan</h2>
+            <p class="muted" id="weekPlanRangeNext" style="margin-top:-6px; margin-bottom:12px; font-size:0.85em;"></p>
+            <div id="weekPlanListNext" class="no-calls-message">Loading...</div>
+            <div style="margin-top:14px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                <div class="form-group" style="margin:0; flex:0 0 auto;">
+                    <label style="font-size:0.8em;">Day</label>
+                    <select id="manualPlanDaySelectNext"></select>
+                </div>
+                <div class="form-group" style="margin:0; flex:1 1 160px;">
+                    <label style="font-size:0.8em;">Hospital name</label>
+                    <input type="text" id="manualPlanClinicInputNext" placeholder="e.g., KPJ Damansara">
+                </div>
+                <button type="button" class="secondary" id="addManualPlanBtnNext" style="margin:0;">+ Add</button>
+            </div>
+        </div>
+
         <!-- Gamified stat tiles -->
         <div class="tile-row">
             <div class="tile tile-gold">
@@ -1461,7 +1479,12 @@
         let unsubGoal = null;
         let uploadedExcelBuffer = null;
         let weekPlanDays = null; // null = no plan loaded yet; array of 5 Mon-Fri day objects once parsed
+        let nextWeekPlanDays = null; // same shape as weekPlanDays, one week ahead - only shown/used on weekends
         let planFileLatestDateMs = null; // latest PRE CALL date found anywhere in the uploaded file - used to nudge for a re-upload if it doesn't reach the current week
+        const WEEK_PLAN_IDS = {
+            0: { range: 'weekPlanRange', list: 'weekPlanList', daySelect: 'manualPlanDaySelect', clinicInput: 'manualPlanClinicInput', addBtn: 'addManualPlanBtn', scrollBtn: 'scrollToUploadBtn', scrollBtnStale: 'scrollToUploadBtnStale' },
+            1: { range: 'weekPlanRangeNext', list: 'weekPlanListNext', daySelect: 'manualPlanDaySelectNext', clinicInput: 'manualPlanClinicInputNext', addBtn: 'addManualPlanBtnNext', scrollBtn: 'scrollToUploadBtnNext', scrollBtnStale: null }
+        };
         const PLAN_FILE_KEY = 'salesTrackerPlanFile';
         const MANUAL_PLAN_KEY = 'salesTrackerManualPlanEntries';
         let cachedManualPlanEntries = JSON.parse(localStorage.getItem(MANUAL_PLAN_KEY) || '[]');
@@ -1669,7 +1692,8 @@
             unsubManualPlan = manualPlanRef.onSnapshot(function(snapshot) {
                 cachedManualPlanEntries = snapshot.docs.map(d => d.data());
                 localStorage.setItem(MANUAL_PLAN_KEY, JSON.stringify(cachedManualPlanEntries));
-                updateWeekPlan();
+                updateWeekPlan(0);
+                updateWeekPlan(1);
             }, function(err) {
                 console.error('Manual plan sync error:', err);
             });
@@ -2307,15 +2331,27 @@
             return cellEl.getAttribute('t') === 's' ? (sharedStrings[parseInt(vEl.textContent, 10)] || '') : vEl.textContent;
         }
 
-        function getThisWeekMonFri() {
+        function isWeekend() {
+            const day = new Date().getDay();
+            return day === 0 || day === 6;
+        }
+
+        // weekOffset 0 = "This week's plan", 1 = "Next week's plan". Deliberately NOT the same
+        // convention as getWeekRange() (line ~1720, Mon-Sun, used for the call-log "This Week"
+        // filter) - that one always anchors to the most recently started Monday regardless of
+        // weekday. This one jumps forward to the UPCOMING Monday on Sat/Sun, so the plan cards
+        // show what's coming up over the weekend instead of the week that just ended. Don't
+        // "fix" this back to match getWeekRange() - the divergence is intentional.
+        function getWeekMonFri(weekOffset) {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const day = today.getDay();
-            // Same Monday-finding arithmetic as getWeekRange() (line ~1720) - deliberately
-            // stops at Friday (5 dates) instead of that function's Mon-Sun range.
-            const diff = (day === 0 ? -6 : 1) - day;
+            let diff;
+            if (day === 6) diff = 2;      // Saturday -> upcoming Monday
+            else if (day === 0) diff = 1; // Sunday -> upcoming Monday
+            else diff = 1 - day;          // Mon-Fri -> most recently started Monday (unchanged)
             const monday = new Date(today);
-            monday.setDate(today.getDate() + diff);
+            monday.setDate(today.getDate() + diff + weekOffset * 7);
             const dates = [];
             for (let i = 0; i < 5; i++) {
                 const d = new Date(monday);
@@ -2333,8 +2369,8 @@
         // The 5-day Mon-Fri shape with no Excel data in it yet - shared by getWeekPlanDays()
         // (which fills in Excel-sourced clinics) and updateWeekPlan()'s fallback when no Excel
         // file has been uploaded, so manually-added hospitals still render without one.
-        function buildWeekSkeleton() {
-            const { dates, today } = getThisWeekMonFri();
+        function buildWeekSkeleton(weekOffset) {
+            const { dates, today } = getWeekMonFri(weekOffset);
             return dates.map(d => ({
                 dateStr: formatDateForExcel(d.getTime()),
                 label: getWeekdayLabel(d),
@@ -2344,9 +2380,9 @@
             }));
         }
 
-        async function getWeekPlanDays() {
-            const weekdays = buildWeekSkeleton();
-            planFileLatestDateMs = null;
+        async function getWeekPlanDays(weekOffset) {
+            const weekdays = buildWeekSkeleton(weekOffset);
+            if (weekOffset === 0) planFileLatestDateMs = null;
 
             if (!uploadedExcelBuffer) return weekdays;
 
@@ -2358,10 +2394,13 @@
                 const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]);
                 // Track the latest PRE CALL date anywhere in the file (not just this week's),
                 // regardless of whether this row lands in the displayed week - used afterwards
-                // to nudge for a re-upload if the whole file predates the current week.
-                const rowDateMs = cellDateMs(dateCell);
-                if (rowDateMs !== null && (planFileLatestDateMs === null || rowDateMs > planFileLatestDateMs)) {
-                    planFileLatestDateMs = rowDateMs;
+                // to nudge for a re-upload if the whole file predates the current week. Only
+                // tracked for the primary (weekOffset 0) card - no second nudge on the preview.
+                if (weekOffset === 0) {
+                    const rowDateMs = cellDateMs(dateCell);
+                    if (rowDateMs !== null && (planFileLatestDateMs === null || rowDateMs > planFileLatestDateMs)) {
+                        planFileLatestDateMs = rowDateMs;
+                    }
                 }
                 const rowDateStr = cellDateStr(dateCell);
                 const weekday = weekdays.find(w => w.dateStr === rowDateStr);
@@ -2618,59 +2657,73 @@
             updateLeaderboard(allCalls);
 
             updateDoctorsSection(allCalls);
-            updateWeekPlan();
+            updateWeekPlan(0);
+            updateWeekPlan(1);
         }
 
         async function refreshTodaysPlanFromBuffer() {
             if (!uploadedExcelBuffer) {
                 weekPlanDays = null;
-                updateWeekPlan();
+                nextWeekPlanDays = null;
+                updateWeekPlan(0);
+                updateWeekPlan(1);
                 return;
             }
             try {
-                weekPlanDays = await getWeekPlanDays();
+                weekPlanDays = await getWeekPlanDays(0);
+                nextWeekPlanDays = await getWeekPlanDays(1);
             } catch (err) {
-                console.error("Could not read plan file for This week's plan:", err);
+                console.error("Could not read plan file for this week's/next week's plan:", err);
                 weekPlanDays = null;
+                nextWeekPlanDays = null;
             }
-            updateWeekPlan();
+            updateWeekPlan(0);
+            updateWeekPlan(1);
         }
 
-        function updateWeekPlan() {
-            const rangeEl = document.getElementById('weekPlanRange');
-            const { dates } = getThisWeekMonFri();
+        function updateWeekPlan(weekOffset) {
+            const ids = WEEK_PLAN_IDS[weekOffset];
+            const planDays = weekOffset === 0 ? weekPlanDays : nextWeekPlanDays;
+
+            if (weekOffset === 1) {
+                const card = document.getElementById('nextWeekPlanCard');
+                if (card) card.style.display = isWeekend() ? '' : 'none';
+            }
+
+            const rangeEl = document.getElementById(ids.range);
+            const { dates } = getWeekMonFri(weekOffset);
             if (rangeEl) {
                 rangeEl.textContent = `${getWeekdayLabel(dates[0])} – ${getWeekdayLabel(dates[4])}`;
             }
 
-            const container = document.getElementById('weekPlanList');
+            const container = document.getElementById(ids.list);
             if (!container) return;
 
-            // weekPlanDays is only null before an Excel file has ever been read (or while one
-            // is being read); manually-added hospitals don't depend on it, so fall back to a
-            // plain Mon-Fri skeleton rather than blocking the whole card on an upload.
-            const days = weekPlanDays || buildWeekSkeleton();
+            // planDays is only null before an Excel file has ever been read (or while one is
+            // being read); manually-added hospitals don't depend on it, so fall back to a plain
+            // Mon-Fri skeleton rather than blocking the whole card on an upload.
+            const days = planDays || buildWeekSkeleton(weekOffset);
             const manualEntries = getManualPlanEntries();
             const calls = getCalls();
             container.className = '';
             let html = '';
 
-            const daySelect = document.getElementById('manualPlanDaySelect');
+            const daySelect = document.getElementById(ids.daySelect);
             if (daySelect) {
                 const prevValue = daySelect.value;
                 daySelect.innerHTML = days.map(d => `<option value="${d.dateStr}">${escapeHtml(d.label)}</option>`).join('');
                 if (days.some(d => d.dateStr === prevValue)) daySelect.value = prevValue;
             }
 
-            if (weekPlanDays === null) {
+            if (planDays === null) {
                 html += `<div class="no-calls-message" style="margin-bottom:10px;">${uploadedExcelBuffer
                     ? 'Reading your plan file…'
-                    : 'Upload your Pre/Post Call Excel file to also see this week\'s schedule from it.<br><button type="button" class="secondary" id="scrollToUploadBtn" style="margin-top:10px;">Go to upload</button>'}</div>`;
-            } else if (planFileLatestDateMs !== null && planFileLatestDateMs < dates[0].getTime()) {
+                    : `Upload your Pre/Post Call Excel file to also see ${weekOffset === 0 ? 'this' : 'next'} week's schedule from it.<br><button type="button" class="secondary" id="${ids.scrollBtn}" style="margin-top:10px;">Go to upload</button>`}</div>`;
+            } else if (weekOffset === 0 && planFileLatestDateMs !== null && planFileLatestDateMs < dates[0].getTime()) {
                 // The whole uploaded file's latest PRE CALL date is before this week's Monday -
                 // it's very likely last week's (or older) plan, not a hard proof, so this is
-                // worded as a nudge rather than an error.
-                html += `<div class="no-calls-message" style="margin-bottom:10px;">This plan file doesn't seem to cover this week — it might be an older upload. Consider uploading the latest version.<br><button type="button" class="secondary" id="scrollToUploadBtnStale" style="margin-top:10px;">Go to upload</button></div>`;
+                // worded as a nudge rather than an error. Only checked for the primary card.
+                html += `<div class="no-calls-message" style="margin-bottom:10px;">This plan file doesn't seem to cover this week — it might be an older upload. Consider uploading the latest version.<br><button type="button" class="secondary" id="${ids.scrollBtnStale}" style="margin-top:10px;">Go to upload</button></div>`;
             }
 
             html += '<div style="display:flex; flex-direction:column; gap:10px;">';
@@ -2718,7 +2771,8 @@
             html += '</div>';
             container.innerHTML = html;
 
-            ['scrollToUploadBtn', 'scrollToUploadBtnStale'].forEach(function(id) {
+            [ids.scrollBtn, ids.scrollBtnStale].forEach(function(id) {
+                if (!id) return;
                 const scrollBtn = document.getElementById(id);
                 if (scrollBtn) {
                     scrollBtn.addEventListener('click', function() {
@@ -2728,28 +2782,34 @@
             });
         }
 
-        document.getElementById('weekPlanList').addEventListener('click', function(e) {
+        function handlePlanListClick(weekOffset, e) {
             const removeBtn = e.target.closest('.manual-plan-remove-btn');
             if (removeBtn) {
                 const entryId = removeBtn.dataset.entryId;
                 saveManualPlanEntries(getManualPlanEntries().filter(entry => String(entry.id) !== entryId));
-                updateWeekPlan();
+                updateWeekPlan(0);
+                updateWeekPlan(1);
                 return;
             }
             const btn = e.target.closest('.plan-log-btn');
-            if (!btn || weekPlanDays === null) return;
-            const day = weekPlanDays[parseInt(btn.dataset.day, 10)];
+            const planDays = weekOffset === 0 ? weekPlanDays : nextWeekPlanDays;
+            if (!btn || planDays === null) return;
+            const day = planDays[parseInt(btn.dataset.day, 10)];
             const clinicEntry = day && day.clinics[parseInt(btn.dataset.clinic, 10)];
             const doctorName = clinicEntry && clinicEntry.doctors[parseInt(btn.dataset.doctor, 10)];
             if (!doctorName) return;
             document.getElementById('doctorName').value = doctorName;
             document.getElementById('clinic').value = clinicEntry.clinic;
             document.getElementById('doctorName').scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
+        }
 
-        document.getElementById('addManualPlanBtn').addEventListener('click', function() {
-            const daySelect = document.getElementById('manualPlanDaySelect');
-            const clinicInput = document.getElementById('manualPlanClinicInput');
+        document.getElementById('weekPlanList').addEventListener('click', function(e) { handlePlanListClick(0, e); });
+        document.getElementById('weekPlanListNext').addEventListener('click', function(e) { handlePlanListClick(1, e); });
+
+        function handleAddManualPlan(weekOffset) {
+            const ids = WEEK_PLAN_IDS[weekOffset];
+            const daySelect = document.getElementById(ids.daySelect);
+            const clinicInput = document.getElementById(ids.clinicInput);
             const clinic = clinicInput.value.trim();
             if (!clinic) {
                 alert('Enter a hospital name first.');
@@ -2757,8 +2817,12 @@
             }
             saveManualPlanEntries(getManualPlanEntries().concat([{ id: Date.now(), dateStr: daySelect.value, clinic }]));
             clinicInput.value = '';
-            updateWeekPlan();
-        });
+            updateWeekPlan(0);
+            updateWeekPlan(1);
+        }
+
+        document.getElementById('addManualPlanBtn').addEventListener('click', function() { handleAddManualPlan(0); });
+        document.getElementById('addManualPlanBtnNext').addEventListener('click', function() { handleAddManualPlan(1); });
 
         function applyDoctorClinicFilter(calls) {
             if (selectedDoctorKey) {
