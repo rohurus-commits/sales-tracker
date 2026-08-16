@@ -2786,7 +2786,9 @@
             const removeBtn = e.target.closest('.manual-plan-remove-btn');
             if (removeBtn) {
                 const entryId = removeBtn.dataset.entryId;
-                saveManualPlanEntries(getManualPlanEntries().filter(entry => String(entry.id) !== entryId));
+                const entry = getManualPlanEntries().find(e2 => String(e2.id) === entryId);
+                if (!confirm(`Remove ${entry ? entry.clinic : 'this hospital'} from your plan?`)) return;
+                saveManualPlanEntries(getManualPlanEntries().filter(e2 => String(e2.id) !== entryId));
                 updateWeekPlan(0);
                 updateWeekPlan(1);
                 return;
