@@ -65,6 +65,29 @@
             text-align: left;
         }
 
+        .auth-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+            padding: 10px 16px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 12px;
+            font-size: 0.9em;
+        }
+
+        .auth-bar .auth-status {
+            opacity: 0.85;
+        }
+
+        .auth-bar button {
+            margin-top: 0;
+            padding: 8px 16px;
+            font-size: 0.9em;
+        }
+
         .main-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -1135,6 +1158,8 @@
             </div>
         </div>
 
+        <div class="auth-bar" id="authBar"></div>
+
         <div class="week-banner">
             📅 Your calls save automatically and never expire — use the filter below to view this week, this month, or all time.
         </div>
@@ -1387,10 +1412,35 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
     <script>
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
         const DOCTOR_STAGES_KEY = 'salesTrackerDoctorStages';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBRXhOLd9t3rOMetGt8Xtptz9GMVHHukOo",
+            authDomain: "sales-tracker-29967.firebaseapp.com",
+            projectId: "sales-tracker-29967",
+            storageBucket: "sales-tracker-29967.firebasestorage.app",
+            messagingSenderId: "874534389546",
+            appId: "1:874534389546:web:31eb9f25a5602e6a11c053"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        db.enablePersistence().catch(function(err) {
+            console.warn('Offline persistence not enabled:', err.code);
+        });
+
+        let currentUser = null;
+        let cachedCalls = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+        let cachedDoctorStages = JSON.parse(localStorage.getItem(DOCTOR_STAGES_KEY) || '{}');
+        let cachedDailyGoal = null;
+        let unsubCalls = null;
+        let unsubStages = null;
+        let unsubGoal = null;
 
         const REACTION_LABELS = {
             'very-interested': '⭐ Very Interested',
@@ -1443,20 +1493,133 @@
         let doctorSearchTerm = '';
 
         function getCalls() {
-            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            return cachedCalls;
         }
 
         function saveCalls(calls) {
+            const previousById = new Map(cachedCalls.map(c => [String(c.id), c]));
+            cachedCalls = calls;
             localStorage.setItem(STORAGE_KEY, JSON.stringify(calls));
+            if (currentUser) {
+                const callsRef = db.collection('users').doc(currentUser.uid).collection('calls');
+                const batch = db.batch();
+                const currentIds = new Set(calls.map(c => String(c.id)));
+                previousById.forEach((_, id) => {
+                    if (!currentIds.has(id)) batch.delete(callsRef.doc(id));
+                });
+                calls.forEach(c => {
+                    const id = String(c.id);
+                    const prev = previousById.get(id);
+                    if (!prev || JSON.stringify(prev) !== JSON.stringify(c)) {
+                        batch.set(callsRef.doc(id), c);
+                    }
+                });
+                batch.commit().catch(err => console.error('Sync to cloud failed:', err));
+            }
         }
 
         function getDoctorStages() {
-            return JSON.parse(localStorage.getItem(DOCTOR_STAGES_KEY) || '{}');
+            return cachedDoctorStages;
         }
 
         function saveDoctorStages(stages) {
+            cachedDoctorStages = stages;
             localStorage.setItem(DOCTOR_STAGES_KEY, JSON.stringify(stages));
+            if (currentUser) {
+                db.collection('users').doc(currentUser.uid).collection('settings').doc('doctorStages')
+                    .set({ stages: stages }).catch(err => console.error('Sync to cloud failed:', err));
+            }
         }
+
+        function mergeCallsById(existing, incoming) {
+            const existingIds = new Set(existing.map(c => c.id));
+            return existing.concat(incoming.filter(c => c && c.id && !existingIds.has(c.id)));
+        }
+
+        function updateAuthUI(user) {
+            const bar = document.getElementById('authBar');
+            if (user) {
+                bar.innerHTML = '<span class="auth-status">☁️ Synced as ' + escapeHtml(user.displayName || user.email) + '</span>' +
+                    '<button type="button" class="secondary" id="signOutBtn">Sign out</button>';
+                document.getElementById('signOutBtn').addEventListener('click', function() {
+                    firebase.auth().signOut();
+                });
+            } else {
+                bar.innerHTML = '<span class="auth-status">💻 Saved on this device only</span>' +
+                    '<button type="button" class="secondary" id="signInBtn">Sign in with Google to sync</button>';
+                document.getElementById('signInBtn').addEventListener('click', function() {
+                    const provider = new firebase.auth.GoogleAuthProvider();
+                    firebase.auth().signInWithPopup(provider).catch(function(err) {
+                        alert('Sign-in failed: ' + err.message);
+                    });
+                });
+            }
+        }
+
+        function offerMigrationIfNeeded(uid, localCalls, firestoreCalls) {
+            const firestoreIds = new Set(firestoreCalls.map(c => String(c.id)));
+            const toImport = localCalls.filter(c => c && c.id && !firestoreIds.has(String(c.id)));
+            if (toImport.length === 0) return;
+            if (!confirm(`Found ${toImport.length} call(s) saved on this device that aren't synced yet. Import them into your synced account now?`)) return;
+            const callsRef = db.collection('users').doc(uid).collection('calls');
+            const batch = db.batch();
+            toImport.forEach(c => batch.set(callsRef.doc(String(c.id)), c));
+            batch.commit().catch(err => alert('Import failed: ' + err.message));
+        }
+
+        function attachFirestoreListeners(uid) {
+            const localCallsAtSignIn = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            let firstCallsSnapshot = true;
+            const callsRef = db.collection('users').doc(uid).collection('calls');
+            unsubCalls = callsRef.onSnapshot(function(snapshot) {
+                cachedCalls = snapshot.docs.map(d => d.data());
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedCalls));
+                if (firstCallsSnapshot) {
+                    firstCallsSnapshot = false;
+                    offerMigrationIfNeeded(uid, localCallsAtSignIn, cachedCalls);
+                }
+                updateDisplay();
+            }, function(err) {
+                console.error('Calls sync error:', err);
+            });
+
+            const stagesRef = db.collection('users').doc(uid).collection('settings').doc('doctorStages');
+            unsubStages = stagesRef.onSnapshot(function(doc) {
+                cachedDoctorStages = (doc.exists && doc.data().stages) ? doc.data().stages : {};
+                localStorage.setItem(DOCTOR_STAGES_KEY, JSON.stringify(cachedDoctorStages));
+                updateDisplay();
+            }, function(err) {
+                console.error('Doctor stages sync error:', err);
+            });
+
+            const goalRef = db.collection('users').doc(uid).collection('settings').doc('dailyGoal');
+            unsubGoal = goalRef.onSnapshot(function(doc) {
+                cachedDailyGoal = (doc.exists && Number.isFinite(doc.data().value)) ? doc.data().value : null;
+                updateDisplay();
+            }, function(err) {
+                console.error('Daily goal sync error:', err);
+            });
+        }
+
+        function detachFirestoreListeners() {
+            if (unsubCalls) { unsubCalls(); unsubCalls = null; }
+            if (unsubStages) { unsubStages(); unsubStages = null; }
+            if (unsubGoal) { unsubGoal(); unsubGoal = null; }
+        }
+
+        firebase.auth().onAuthStateChanged(function(user) {
+            currentUser = user;
+            updateAuthUI(user);
+            detachFirestoreListeners();
+            if (user) {
+                attachFirestoreListeners(user.uid);
+            } else {
+                cachedCalls = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+                cachedDoctorStages = JSON.parse(localStorage.getItem(DOCTOR_STAGES_KEY) || '{}');
+                cachedDailyGoal = null;
+                updateDisplay();
+            }
+        });
 
         function escapeHtml(str) {
             return String(str || '').replace(/[&<>"']/g, ch => ({
@@ -1855,14 +2018,24 @@
 
         // Daily goal input
         function getDailyGoal() {
+            if (cachedDailyGoal !== null) return cachedDailyGoal;
             const v = parseInt(localStorage.getItem(DAILY_GOAL_KEY), 10);
             return Number.isFinite(v) && v > 0 ? v : 2;
+        }
+
+        function saveDailyGoal(v) {
+            cachedDailyGoal = v;
+            localStorage.setItem(DAILY_GOAL_KEY, String(v));
+            if (currentUser) {
+                db.collection('users').doc(currentUser.uid).collection('settings').doc('dailyGoal')
+                    .set({ value: v }).catch(err => console.error('Sync to cloud failed:', err));
+            }
         }
 
         document.getElementById('dailyGoalInput').addEventListener('change', function() {
             const v = Math.max(1, parseInt(this.value, 10) || 2);
             this.value = v;
-            localStorage.setItem(DAILY_GOAL_KEY, String(v));
+            saveDailyGoal(v);
             updateDisplay();
         });
 
@@ -1947,9 +2120,7 @@
                     const imported = JSON.parse(ev.target.result);
                     if (!Array.isArray(imported)) throw new Error('Invalid backup file');
                     if (!confirm(`Restore ${imported.length} call(s) from this backup? Calls already in your tracker are kept as-is; only new ones are added.`)) return;
-                    const existing = getCalls();
-                    const existingIds = new Set(existing.map(c => c.id));
-                    const merged = existing.concat(imported.filter(c => c && c.id && !existingIds.has(c.id)));
+                    const merged = mergeCallsById(getCalls(), imported);
                     saveCalls(merged);
                     updateDisplay();
                     alert('✓ Backup restored!');
@@ -1995,8 +2166,8 @@
         // PRE CALL columns: A=Month,B=Date,C=Day,D=State,E=Area,F=Accno,G=Clinic,H=DrName,I=Class
         // POST CALL columns: J=Month,K=Date,L=Day,M=State,N=Area,O=Accno,P=Clinic,Q=DrName,R=Class,S=Sales,T=Remarks
         const EXCEL_COL_LETTERS = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V'];
-        const EXCEL_PRE = { month: 0, date: 1, day: 2, state: 3, area: 4, clinic: 6, doctor: 7 };
-        const EXCEL_POST = { month: 9, date: 10, day: 11, state: 12, area: 13, clinic: 15, doctor: 16 };
+        const EXCEL_PRE = { month: 0, date: 1, day: 2, state: 3, area: 4, clinic: 6, doctor: 7, class: 8 };
+        const EXCEL_POST = { month: 9, date: 10, day: 11, state: 12, area: 13, clinic: 15, doctor: 16, class: 17 };
 
         function excelColLetterToIndex(letters) {
             let n = 0;
@@ -2129,6 +2300,9 @@
                 copyIntoPostCell(matchedRowEl, EXCEL_POST.area, EXCEL_PRE.area, false);
                 copyIntoPostCell(matchedRowEl, EXCEL_POST.clinic, EXCEL_PRE.clinic, false);
                 copyIntoPostCell(matchedRowEl, EXCEL_POST.doctor, EXCEL_PRE.doctor, false);
+                // Class mirrors PRE CALL's Class in real sheet usage (rows 12/22 both show "A"
+                // in both blocks). Sales and Remarks stay blank - no data source for those.
+                copyIntoPostCell(matchedRowEl, EXCEL_POST.class, EXCEL_PRE.class, false);
 
                 matched.push(call);
             });
@@ -2207,7 +2381,7 @@
         // Clear all data
         document.getElementById('clearAllBtn').addEventListener('click', function() {
             if (confirm('Clear ALL logged calls? This cannot be undone — consider downloading a backup first.')) {
-                localStorage.removeItem(STORAGE_KEY);
+                saveCalls([]);
                 updateDisplay();
                 alert('All data cleared!');
             }
