@@ -2420,6 +2420,7 @@
 
         async function generateFilledExcel(arrayBuffer, calls) {
             const { zip, sheetPath, sharedStrings, sheetDoc, rowEls } = await parseWorkbookSheet(arrayBuffer);
+            const sheetDataEl = sheetDoc.getElementsByTagName('sheetData')[0];
 
             function getCellEl(rowEl, colLetter) {
                 const rAttr = rowEl.getAttribute('r');
@@ -2485,27 +2486,166 @@
                 }
             }
 
+            // Writes a brand-new text value into a cell - unlike copyIntoPostCell (which only
+            // ever copies an already-valid shared-string index from another cell), this can
+            // introduce text that doesn't exist anywhere in the sheet yet (e.g. an unplanned
+            // visit's doctor name). Reuses an existing shared-string index when the value
+            // happens to already exist (cheap, matches the existing convention); otherwise
+            // falls back to a self-contained inline string (t="inlineStr", <is><t>) - the
+            // OOXML-correct way to add literal text without touching sharedStrings.xml's
+            // count/entries, which is shared by the whole sheet.
+            function setCellText(cellEl, value) {
+                Array.from(cellEl.getElementsByTagName('v')).forEach(v => cellEl.removeChild(v));
+                Array.from(cellEl.getElementsByTagName('is')).forEach(is => cellEl.removeChild(is));
+                const existingIdx = sharedStrings.indexOf(value);
+                if (existingIdx >= 0) {
+                    cellEl.setAttribute('t', 's');
+                    const vEl = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'v');
+                    vEl.textContent = String(existingIdx);
+                    cellEl.appendChild(vEl);
+                } else {
+                    cellEl.setAttribute('t', 'inlineStr');
+                    const isEl = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'is');
+                    const tEl = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 't');
+                    tEl.textContent = value;
+                    isEl.appendChild(tEl);
+                    cellEl.appendChild(isEl);
+                }
+            }
+
+            const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+            const DAY_ABBR_CAP = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+            // Appends a brand-new row for a call with no matching PRE CALL row (an unplanned
+            // visit). PRE CALL side stays entirely absent - there is no plan data for a visit
+            // that wasn't planned, and nothing here should be invented to fill it. Only
+            // Month/Date/Day/Clinic/Doctor are set on the POST CALL side, computed from or
+            // copied verbatim out of the call itself (never fabricated); State/Area/Class have
+            // no equivalent anywhere in the app's call data and are correctly left absent too.
+            function createUnplannedRow(rowNum, templateRowEl, call, insertBeforeEl) {
+                const newRow = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'row');
+                newRow.setAttribute('r', String(rowNum));
+                if (insertBeforeEl) {
+                    sheetDataEl.insertBefore(newRow, insertBeforeEl);
+                } else {
+                    sheetDataEl.appendChild(newRow);
+                }
+
+                function setStyled(postField, setValue, styleSourceField) {
+                    const cell = getOrCreateCellEl(newRow, EXCEL_COL_LETTERS[postField]);
+                    const templateCell = getCellEl(templateRowEl, EXCEL_COL_LETTERS[styleSourceField !== undefined ? styleSourceField : postField]);
+                    const templateStyle = templateCell && templateCell.getAttribute('s');
+                    if (templateStyle) cell.setAttribute('s', templateStyle);
+                    setValue(cell);
+                }
+
+                const d = new Date(call.id);
+                setStyled(EXCEL_POST.month, cell => setCellText(cell, MONTH_ABBR[d.getMonth()]));
+                setStyled(EXCEL_POST.date, cell => {
+                    cell.removeAttribute('t');
+                    // Same "treat the local calendar date as if it were UTC midnight" convention
+                    // as excelSerialToDateStr/formatDateForExcel elsewhere in this file - this is
+                    // the one place that needs to go the other direction (date -> serial) since
+                    // copyIntoPostCell never had to compute a fresh serial, only copy one.
+                    const utcMidnight = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+                    const vEl = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'v');
+                    vEl.textContent = String((utcMidnight - EXCEL_EPOCH_MS) / 86400000);
+                    cell.appendChild(vEl);
+                    // The template row's own POST CALL date column is just a generic blank-cell
+                    // style, never actually date-formatted (it was never filled in with a real
+                    // date before). PRE CALL date cells always are, on any real row - same
+                    // source copyIntoPostCell already relies on for matched rows, just applied
+                    // here to the template row instead of the matched row itself.
+                }, EXCEL_PRE.date);
+                setStyled(EXCEL_POST.day, cell => setCellText(cell, DAY_ABBR_CAP[d.getDay()]));
+                setStyled(EXCEL_POST.clinic, cell => setCellText(cell, call.clinic || ''));
+                setStyled(EXCEL_POST.doctor, cell => setCellText(cell, call.doctorName || ''));
+                return newRow;
+            }
+
+            // Renumbers a row (and every cell inside it) to a new row number - column letters
+            // are untouched, only the row-number portion of each r="..." changes.
+            function renumberRow(rowEl, newRowNum) {
+                Array.from(rowEl.getElementsByTagName('c')).forEach(c => {
+                    const colLetter = c.getAttribute('r').match(/^[A-Z]+/)[0];
+                    c.setAttribute('r', colLetter + newRowNum);
+                });
+                rowEl.setAttribute('r', String(newRowNum));
+            }
+
+            // Shared formulas (the "APPROACHED CALLS" doctor-name auto-mirror column) only
+            // exist in the earlier part of this real sheet - true row insertion is only
+            // attempted after the last row that has any formula cell, so their ref=".." ranges
+            // and xl/calcChain.xml are never disturbed. Computed fresh each run, not hardcoded,
+            // since a different month's file could have formulas in different rows.
+            let maxFormulaRow = 0;
+            rowEls.forEach(r => {
+                if (Array.from(r.getElementsByTagName('c')).some(c => c.getElementsByTagName('f').length > 0)) {
+                    maxFormulaRow = Math.max(maxFormulaRow, parseInt(r.getAttribute('r'), 10));
+                }
+            });
+
             const matched = [];
-            const unmatched = [];
+            const createdGrouped = [];
+            const createdAppended = [];
+            // Not every row has POST CALL cells pre-styled - some real rows near the end of
+            // this sheet only ever had the PRE CALL side filled in, so they have no J..T cells
+            // at all to copy a style from. Search backward for the most recent row that does.
+            const templateRowEl = [...rowEls].reverse().find(r => getCellEl(r, EXCEL_COL_LETTERS[EXCEL_POST.month])) || rowEls[rowEls.length - 1];
+            let nextNewRowNum = Math.max(...rowEls.map(r => parseInt(r.getAttribute('r'), 10))) + 1;
 
             calls.forEach(call => {
                 const targetDate = formatDateForExcel(call.id);
                 const targetName = normalizeDoctorNameForExcel(call.doctorName);
                 let matchedRowEl = null;
+                let lastSameDateRowEl = null;
 
                 for (const rowEl of rowEls) {
                     const doctorCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.doctor]);
                     const doctorText = cellText(doctorCell);
+                    // Date cluster tracking must also see rows created earlier in THIS run for an
+                    // unplanned call - those only ever get a POST CALL date (no PRE CALL doctor/date
+                    // at all), so without the fallback here, a 2nd same-date unplanned call in one
+                    // export would insert at the same spot as the 1st instead of after it.
+                    const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]) || getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_POST.date]);
+                    const rowDateMatches = cellDateStr(dateCell) === targetDate;
+                    if (rowDateMatches) lastSameDateRowEl = rowEl; // loop runs in row order, so this ends on the LAST match
                     if (!doctorText) continue;
-                    const dateCell = getCellEl(rowEl, EXCEL_COL_LETTERS[EXCEL_PRE.date]);
-                    if (cellDateStr(dateCell) === targetDate && normalizeDoctorNameForExcel(doctorText) === targetName) {
+                    if (rowDateMatches && normalizeDoctorNameForExcel(doctorText) === targetName) {
                         matchedRowEl = rowEl;
                         break;
                     }
                 }
 
                 if (!matchedRowEl) {
-                    unmatched.push(call);
+                    const insertAfterRowNum = lastSameDateRowEl ? parseInt(lastSameDateRowEl.getAttribute('r'), 10) : null;
+                    const canGroup = insertAfterRowNum !== null && insertAfterRowNum > maxFormulaRow;
+
+                    if (canGroup) {
+                        const targetRowNum = insertAfterRowNum + 1;
+                        const idx = rowEls.findIndex(r => parseInt(r.getAttribute('r'), 10) >= targetRowNum);
+                        let newRow;
+                        if (idx === -1) {
+                            newRow = createUnplannedRow(targetRowNum, templateRowEl, call, null);
+                            rowEls.push(newRow);
+                        } else {
+                            for (let i = rowEls.length - 1; i >= idx; i--) {
+                                renumberRow(rowEls[i], parseInt(rowEls[i].getAttribute('r'), 10) + 1);
+                            }
+                            newRow = createUnplannedRow(targetRowNum, templateRowEl, call, rowEls[idx]);
+                            rowEls.splice(idx, 0, newRow);
+                        }
+                        nextNewRowNum++;
+                        createdGrouped.push(call);
+                    } else {
+                        // Must also land in rowEls (not just the DOM) - otherwise a LATER grouped
+                        // insertion in this same run has no way to know this row exists and needs
+                        // shifting too, causing a row-number collision with it.
+                        const appendedRow = createUnplannedRow(nextNewRowNum, templateRowEl, call);
+                        rowEls.push(appendedRow);
+                        nextNewRowNum++;
+                        createdAppended.push(call);
+                    }
                     return;
                 }
 
@@ -2524,12 +2664,19 @@
             });
 
             let blob = null;
-            if (matched.length > 0) {
+            if (matched.length > 0 || createdGrouped.length > 0 || createdAppended.length > 0) {
+                if (createdGrouped.length > 0 || createdAppended.length > 0) {
+                    const dimEl = sheetDoc.getElementsByTagName('dimension')[0];
+                    if (dimEl) {
+                        const ref = dimEl.getAttribute('ref');
+                        dimEl.setAttribute('ref', ref.replace(/\d+$/, String(nextNewRowNum - 1)));
+                    }
+                }
                 zip.file(sheetPath, new XMLSerializer().serializeToString(sheetDoc));
                 blob = await zip.generateAsync({ type: 'blob' });
             }
 
-            return { matched, unmatched, blob };
+            return { matched, createdGrouped, createdAppended, blob };
         }
 
         document.getElementById('excelUploadInput').addEventListener('change', function(e) {
@@ -2572,14 +2719,25 @@
 
             try {
                 const calls = getCalls();
-                const { matched, unmatched, blob } = await generateFilledExcel(uploadedExcelBuffer, calls);
+                const { matched, createdGrouped, createdAppended, blob } = await generateFilledExcel(uploadedExcelBuffer, calls);
 
                 const resultBox = document.getElementById('excelExportResult');
                 resultBox.style.display = 'block';
-                let resultHtml = `<p><strong>${matched.length} of ${calls.length}</strong> logged calls matched and filled.</p>`;
-                if (unmatched.length) {
-                    resultHtml += `<p style="margin-top: 8px; color: #fdba74;">Not matched (add these manually):</p><ul style="margin-left: 20px; color: #fdba74;">`;
-                    unmatched.forEach(c => {
+                const totalHandled = matched.length + createdGrouped.length + createdAppended.length;
+                let resultHtml = `<p><strong>${totalHandled} of ${calls.length}</strong> logged calls handled.</p>`;
+                if (matched.length) {
+                    resultHtml += `<p style="margin-top: 4px;">${matched.length} matched an existing planned row.</p>`;
+                }
+                if (createdGrouped.length) {
+                    resultHtml += `<p style="margin-top: 8px; color: #86efac;">${createdGrouped.length} added as new row(s), grouped with their date (no matching plan):</p><ul style="margin-left: 20px; color: #86efac;">`;
+                    createdGrouped.forEach(c => {
+                        resultHtml += `<li>${escapeHtml(c.doctorName)} — ${formatDateForExcel(c.id)}</li>`;
+                    });
+                    resultHtml += '</ul>';
+                }
+                if (createdAppended.length) {
+                    resultHtml += `<p style="margin-top: 8px; color: #86efac;">${createdAppended.length} added as new row(s) at the end (no matching plan, or grouping there wasn't safe):</p><ul style="margin-left: 20px; color: #86efac;">`;
+                    createdAppended.forEach(c => {
                         resultHtml += `<li>${escapeHtml(c.doctorName)} — ${formatDateForExcel(c.id)}</li>`;
                     });
                     resultHtml += '</ul>';
