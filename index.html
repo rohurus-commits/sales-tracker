@@ -2280,8 +2280,16 @@
             const relsXml = await zip.file('xl/_rels/workbook.xml.rels').async('string');
             const parser = new DOMParser();
             const wbDoc = parser.parseFromString(workbookXml, 'application/xml');
-            const firstSheetEl = wbDoc.getElementsByTagName('sheet')[0];
-            const rId = firstSheetEl.getAttribute('r:id');
+            // Multi-tab workbooks (one sheet per month) exist in real use - always operate on
+            // whichever tab was active/selected when the file was last saved (usually the
+            // current month), never blindly the first tab. workbookView's activeTab is 0-indexed
+            // and absent entirely on a single-sheet file, where index 0 is correct anyway.
+            const workbookViewEl = wbDoc.getElementsByTagName('workbookView')[0];
+            const activeTabIdx = workbookViewEl && workbookViewEl.getAttribute('activeTab')
+                ? parseInt(workbookViewEl.getAttribute('activeTab'), 10) : 0;
+            const sheetEls = wbDoc.getElementsByTagName('sheet');
+            const targetSheetEl = sheetEls[activeTabIdx] || sheetEls[0];
+            const rId = targetSheetEl.getAttribute('r:id');
             const relsDoc = parser.parseFromString(relsXml, 'application/xml');
             let sheetTarget = null;
             Array.from(relsDoc.getElementsByTagName('Relationship')).forEach(rel => {
