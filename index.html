@@ -1441,7 +1441,7 @@
             <div id="excelExportResult" class="no-calls-message" style="display: none;"></div>
         </div>
 
-        <p style="text-align: center; font-size: 11px; opacity: 0.4; margin: 16px 0 4px;">build: 2026-08-18</p>
+        <p style="text-align: center; font-size: 11px; opacity: 0.4; margin: 16px 0 4px;">build: 2026-08-18-2</p>
     </div>
 
     <div id="undoToast">
@@ -1454,7 +1454,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
     <script>
-        console.log('build: 2026-08-18');
+        console.log('build: 2026-08-18-2');
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
         const DOCTOR_STAGES_KEY = 'salesTrackerDoctorStages';
@@ -2564,19 +2564,27 @@
             const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
             const DAY_ABBR_CAP = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-            // Appends a brand-new row for a call with no matching PRE CALL row (an unplanned
+            // Fills a brand-new row for a call with no matching PRE CALL row (an unplanned
             // visit). PRE CALL side stays entirely absent - there is no plan data for a visit
             // that wasn't planned, and nothing here should be invented to fill it. Only
             // Month/Date/Day/Clinic/Doctor are set on the POST CALL side, computed from or
             // copied verbatim out of the call itself (never fabricated); State/Area/Class have
             // no equivalent anywhere in the app's call data and are correctly left absent too.
+            // Reuses an existing (already-formatted-but-empty) row at rowNum if one exists -
+            // real monthly sheets are typically pre-formatted well past the last planned date,
+            // so this fills into that existing space instead of creating a brand-new row; only
+            // creates one if rowNum runs past the end of the sheet entirely.
             function createUnplannedRow(rowNum, templateRowEl, call) {
-                const newRow = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'row');
-                newRow.setAttribute('r', String(rowNum));
-                sheetDataEl.appendChild(newRow);
+                let targetRow = rowEls.find(r => parseInt(r.getAttribute('r'), 10) === rowNum);
+                if (!targetRow) {
+                    targetRow = sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI, 'row');
+                    targetRow.setAttribute('r', String(rowNum));
+                    sheetDataEl.appendChild(targetRow);
+                    rowEls.push(targetRow);
+                }
 
                 function setStyled(postField, setValue, styleSourceField) {
-                    const cell = getOrCreateCellEl(newRow, EXCEL_COL_LETTERS[postField]);
+                    const cell = getOrCreateCellEl(targetRow, EXCEL_COL_LETTERS[postField]);
                     const templateCell = getCellEl(templateRowEl, EXCEL_COL_LETTERS[styleSourceField !== undefined ? styleSourceField : postField]);
                     const templateStyle = templateCell && templateCell.getAttribute('s');
                     if (templateStyle) cell.setAttribute('s', templateStyle);
@@ -2607,7 +2615,15 @@
                 setStyled(EXCEL_POST.day, cell => setCellText(cell, DAY_ABBR_CAP[d.getDay()]));
                 setStyled(EXCEL_POST.clinic, cell => setCellText(cell, call.clinic || ''));
                 setStyled(EXCEL_POST.doctor, cell => setCellText(cell, call.doctorName || ''));
-                return newRow;
+                return targetRow;
+            }
+
+            // A row is safe to fill with an unplanned visit if none of the POST CALL fields
+            // we'd write already hold real content - true for the pre-formatted padding rows
+            // that follow the last planned date, which is the only place this is ever used.
+            function isRowFreeForUnplanned(rowEl) {
+                return [EXCEL_POST.month, EXCEL_POST.date, EXCEL_POST.day, EXCEL_POST.clinic, EXCEL_POST.doctor]
+                    .every(field => !cellText(getCellEl(rowEl, EXCEL_COL_LETTERS[field])));
             }
 
             const matched = [];
@@ -2621,7 +2637,18 @@
             // the template and produce unstyled/wrongly-formatted new rows (e.g. a raw date
             // serial number instead of a formatted date).
             const templateRowEl = [...rowEls].reverse().find(r => cellText(getCellEl(r, EXCEL_COL_LETTERS[EXCEL_POST.month]))) || rowEls[rowEls.length - 1];
-            let nextNewRowNum = Math.max(...rowEls.map(r => parseInt(r.getAttribute('r'), 10))) + 1;
+
+            const originalMaxRowNum = Math.max(...rowEls.map(r => parseInt(r.getAttribute('r'), 10)));
+            // Real monthly sheets are pre-formatted with blank rows well past the last planned
+            // date (the whole rest of the month, styled in advance). Unplanned visits should
+            // land right after the last row with real content - reusing that existing blank
+            // space - rather than skipping past all of it to the sheet's absolute end.
+            let lastRealRowNum = 0;
+            rowEls.forEach(r => {
+                const hasReal = cellText(getCellEl(r, EXCEL_COL_LETTERS[EXCEL_PRE.doctor])) || cellText(getCellEl(r, EXCEL_COL_LETTERS[EXCEL_POST.doctor]));
+                if (hasReal) lastRealRowNum = Math.max(lastRealRowNum, parseInt(r.getAttribute('r'), 10));
+            });
+            let nextNewRowNum = lastRealRowNum + 1;
 
             calls.forEach(call => {
                 const targetDate = formatDateForExcel(call.id);
@@ -2640,6 +2667,14 @@
                 }
 
                 if (!matchedRowEl) {
+                    // Skip forward past any candidate row that unexpectedly already holds real
+                    // content - shouldn't happen given lastRealRowNum's definition, but cheap
+                    // insurance against ever silently overwriting real data.
+                    while (true) {
+                        const candidate = rowEls.find(r => parseInt(r.getAttribute('r'), 10) === nextNewRowNum);
+                        if (!candidate || isRowFreeForUnplanned(candidate)) break;
+                        nextNewRowNum++;
+                    }
                     createUnplannedRow(nextNewRowNum, templateRowEl, call);
                     nextNewRowNum++;
                     created.push(call);
@@ -2662,11 +2697,14 @@
 
             let blob = null;
             if (matched.length > 0 || created.length > 0) {
-                if (created.length > 0) {
+                // Only needs updating if a new row was actually created past the sheet's
+                // original end - filling into pre-existing blank rows never changes this.
+                const newMaxRowNum = Math.max(...rowEls.map(r => parseInt(r.getAttribute('r'), 10)));
+                if (newMaxRowNum > originalMaxRowNum) {
                     const dimEl = sheetDoc.getElementsByTagName('dimension')[0];
                     if (dimEl) {
                         const ref = dimEl.getAttribute('ref');
-                        dimEl.setAttribute('ref', ref.replace(/\d+$/, String(nextNewRowNum - 1)));
+                        dimEl.setAttribute('ref', ref.replace(/\d+$/, String(newMaxRowNum)));
                     }
                 }
                 zip.file(sheetPath, new XMLSerializer().serializeToString(sheetDoc));
