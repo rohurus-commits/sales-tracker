@@ -1440,6 +1440,8 @@
             <button class="secondary" id="generateExcelBtn" disabled>Generate Filled Copy</button>
             <div id="excelExportResult" class="no-calls-message" style="display: none;"></div>
         </div>
+
+        <p style="text-align: center; font-size: 11px; opacity: 0.4; margin: 16px 0 4px;">build: 2026-08-18</p>
     </div>
 
     <div id="undoToast">
@@ -1452,6 +1454,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
     <script>
+        console.log('build: 2026-08-18');
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
         const DOCTOR_STAGES_KEY = 'salesTrackerDoctorStages';
