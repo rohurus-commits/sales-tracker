@@ -88,19 +88,6 @@
             font-size: 0.9em;
         }
 
-        .main-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-
-        @media (max-width: 1024px) {
-            .main-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
         @media (max-width: 768px) {
             body {
                 padding: 8px;
@@ -564,53 +551,17 @@
             flex-shrink: 0;
         }
 
-        .pipeline-board {
-            display: flex;
-            gap: 10px;
-            overflow-x: auto;
-            padding-bottom: 6px;
-            margin-bottom: 8px;
-        }
-
-        .pipeline-column {
-            min-width: 130px;
-            flex: 1;
-        }
-
-        .pipeline-column-header {
+        .stage-group-header {
             font-size: 0.75em;
             color: #8a8aa0;
             font-weight: 600;
-            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            margin: 18px 0 8px;
         }
 
-        .pipeline-card {
-            border-radius: 10px;
-            padding: 10px;
-            margin-bottom: 8px;
-            cursor: pointer;
-            transition: transform 0.15s;
-        }
-
-        .pipeline-card:hover {
-            transform: translateY(-2px);
-        }
-
-        .pipeline-card-clinic {
-            font-weight: 700;
-            font-size: 0.9em;
-        }
-
-        .pipeline-card-doctor {
-            font-size: 0.78em;
-            color: #c9c9d9;
-            margin-top: 2px;
-        }
-
-        .pipeline-empty {
-            color: #6a6a80;
-            font-size: 0.8em;
-            padding: 10px 0;
+        .stage-group-header:first-child {
+            margin-top: 0;
         }
 
         .doctor-row {
@@ -1253,7 +1204,70 @@
             <div id="leaderboardList"></div>
         </div>
 
-        <!-- Doctors & Clinics pipeline -->
+        <!-- Log Daily Call -->
+        <div class="card">
+            <h2>📞 Log Daily Call</h2>
+
+            <div class="today-goal-box" id="todayGoalBox">
+                <div class="today-goal-row">
+                    <span id="todayGoalText">Today's calls: 0 / 2</span>
+                    <span class="goal-input-wrap">
+                        Goal:
+                        <input type="number" id="dailyGoalInput" min="1" value="2">
+                    </span>
+                </div>
+                <div class="progress-bar" style="margin: 0;">
+                    <div class="progress-fill" id="todayGoalFill" style="width: 0%;"></div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Doctor Name *</label>
+                <input type="text" id="doctorName" placeholder="e.g., Dr. Ahmed">
+            </div>
+            <div class="form-group">
+                <label>Hospital/Clinic</label>
+                <input type="text" id="clinic" placeholder="e.g., Metro Medical Center">
+            </div>
+            <div class="form-group">
+                <label>Time Slot</label>
+                <div class="reaction-buttons">
+                    <button type="button" class="reaction-btn" data-time="morning">🌅 Morning (10am-1pm)</button>
+                    <button type="button" class="reaction-btn" data-time="afternoon">☀️ Afternoon (2pm-5pm)</button>
+                </div>
+                <input type="hidden" id="time" value="">
+            </div>
+            <div class="form-group">
+                <label>Products Discussed</label>
+                <input type="text" id="products" placeholder="e.g., Product A, Product B">
+            </div>
+            <div class="form-group">
+                <label>Doctor's Reaction *</label>
+                <div class="reaction-buttons">
+                    <button type="button" class="reaction-btn" data-reaction="very-interested">Very Interested ⭐</button>
+                    <button type="button" class="reaction-btn" data-reaction="interested">Interested ✓</button>
+                    <button type="button" class="reaction-btn" data-reaction="not-yet">Not Yet</button>
+                    <button type="button" class="reaction-btn" data-reaction="skeptical">Skeptical ⚠️</button>
+                </div>
+                <input type="hidden" id="reaction" value="">
+            </div>
+            <div class="form-group">
+                <label>Objections Raised (comma-separated)</label>
+                <textarea id="objections" rows="3" placeholder="e.g., Cost barrier, How fast does it work?"></textarea>
+            </div>
+            <div class="form-group">
+                <label>What Worked in This Call?</label>
+                <textarea id="whatWorked" rows="2" placeholder="e.g., Resistance graph, IDSA guideline reference"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Next Follow-up Date (optional)</label>
+                <input type="date" id="followUpDate">
+            </div>
+            <button id="saveCallBtn">Save Call 💾</button>
+            <button id="cancelEditBtn" class="secondary" style="display: none;">Cancel Edit</button>
+        </div>
+
+        <!-- Doctors & Clinics -->
         <div class="card">
             <h2>🗂️ Doctors & Clinics</h2>
             <p class="muted">Every doctor and clinic you've logged, grouped from your calls — with a status that persists across calls.</p>
@@ -1267,9 +1281,6 @@
                 <button type="button" class="chip-clear-btn" id="clearDoctorFilterBtn">Clear filter ✕</button>
             </div>
 
-            <p class="muted" style="margin-top: 18px;">Pipeline — where each doctor stands</p>
-            <div class="pipeline-board" id="pipelineBoard"></div>
-
             <p class="muted" style="margin-top: 18px;">Doctors</p>
             <div id="doctorsList" class="no-calls-message">
                 No calls logged yet. Doctors will appear here once you log a call.
@@ -1279,122 +1290,57 @@
             <div class="clinics-grid" id="clinicsGrid"></div>
         </div>
 
-        <div class="main-grid">
-            <!-- Left: Input Daily Call -->
-            <div class="card">
-                <h2>📞 Log Daily Call</h2>
+        <!-- Sales Intelligence Panel -->
+        <div class="card">
+            <h2>📊 Sales Intelligence</h2>
 
-                <div class="today-goal-box" id="todayGoalBox">
-                    <div class="today-goal-row">
-                        <span id="todayGoalText">Today's calls: 0 / 2</span>
-                        <span class="goal-input-wrap">
-                            Goal:
-                            <input type="number" id="dailyGoalInput" min="1" value="2">
-                        </span>
-                    </div>
-                    <div class="progress-bar" style="margin: 0;">
-                        <div class="progress-fill" id="todayGoalFill" style="width: 0%;"></div>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>Doctor Name *</label>
-                    <input type="text" id="doctorName" placeholder="e.g., Dr. Ahmed">
-                </div>
-                <div class="form-group">
-                    <label>Hospital/Clinic</label>
-                    <input type="text" id="clinic" placeholder="e.g., Metro Medical Center">
-                </div>
-                <div class="form-group">
-                    <label>Time Slot</label>
-                    <div class="reaction-buttons">
-                        <button type="button" class="reaction-btn" data-time="morning">🌅 Morning (10am-1pm)</button>
-                        <button type="button" class="reaction-btn" data-time="afternoon">☀️ Afternoon (2pm-5pm)</button>
-                    </div>
-                    <input type="hidden" id="time" value="">
-                </div>
-                <div class="form-group">
-                    <label>Products Discussed</label>
-                    <input type="text" id="products" placeholder="e.g., Product A, Product B">
-                </div>
-                <div class="form-group">
-                    <label>Doctor's Reaction *</label>
-                    <div class="reaction-buttons">
-                        <button type="button" class="reaction-btn" data-reaction="very-interested">Very Interested ⭐</button>
-                        <button type="button" class="reaction-btn" data-reaction="interested">Interested ✓</button>
-                        <button type="button" class="reaction-btn" data-reaction="not-yet">Not Yet</button>
-                        <button type="button" class="reaction-btn" data-reaction="skeptical">Skeptical ⚠️</button>
-                    </div>
-                    <input type="hidden" id="reaction" value="">
-                </div>
-                <div class="form-group">
-                    <label>Objections Raised (comma-separated)</label>
-                    <textarea id="objections" rows="3" placeholder="e.g., Cost barrier, How fast does it work?"></textarea>
-                </div>
-                <div class="form-group">
-                    <label>What Worked in This Call?</label>
-                    <textarea id="whatWorked" rows="2" placeholder="e.g., Resistance graph, IDSA guideline reference"></textarea>
-                </div>
-                <div class="form-group">
-                    <label>Next Follow-up Date (optional)</label>
-                    <input type="date" id="followUpDate">
-                </div>
-                <button id="saveCallBtn">Save Call 💾</button>
-                <button id="cancelEditBtn" class="secondary" style="display: none;">Cancel Edit</button>
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="summary">Summary</button>
+                <button class="tab-btn" data-tab="objections">Objections</button>
+                <button class="tab-btn" data-tab="winners">Winners</button>
+                <button class="tab-btn" data-tab="followups">Follow-ups</button>
             </div>
 
-            <!-- Right: Intelligence Panel -->
-            <div class="card">
-                <h2>📊 Sales Intelligence</h2>
-
-                <div class="tabs">
-                    <button class="tab-btn active" data-tab="summary">Summary</button>
-                    <button class="tab-btn" data-tab="objections">Objections</button>
-                    <button class="tab-btn" data-tab="winners">Winners</button>
-                    <button class="tab-btn" data-tab="followups">Follow-ups</button>
-                </div>
-
-                <!-- Summary Tab -->
-                <div class="tab-content active" id="summary-tab">
-                    <div class="mini-stats-row">
-                        <div class="mini-stat">
-                            <span id="objectionCount">0</span>
-                            <label>Objections Found</label>
-                        </div>
-                        <div class="mini-stat">
-                            <span id="winnersCount">0</span>
-                            <label>Winning Tactics</label>
-                        </div>
+            <!-- Summary Tab -->
+            <div class="tab-content active" id="summary-tab">
+                <div class="mini-stats-row">
+                    <div class="mini-stat">
+                        <span id="objectionCount">0</span>
+                        <label>Objections Found</label>
                     </div>
-
-                    <p class="muted" style="margin-bottom: 10px;">Recent activity</p>
-                    <div id="recentCalls" class="no-calls-message">
-                        No calls logged yet. Add your first call above! 👆
+                    <div class="mini-stat">
+                        <span id="winnersCount">0</span>
+                        <label>Winning Tactics</label>
                     </div>
                 </div>
 
-                <!-- Objections Tab -->
-                <div class="tab-content" id="objections-tab">
-                    <p class="muted">Objections ranked by frequency</p>
-                    <div id="objectionsList" class="no-calls-message">
-                        Log calls to see objections ranked here
-                    </div>
+                <p class="muted" style="margin-bottom: 10px;">Recent activity</p>
+                <div id="recentCalls" class="no-calls-message">
+                    No calls logged yet. Add your first call above! 👆
                 </div>
+            </div>
 
-                <!-- Winners Tab -->
-                <div class="tab-content" id="winners-tab">
-                    <p class="muted">What's working in your calls</p>
-                    <div id="winnersList" class="no-calls-message">
-                        Log calls to track winning tactics
-                    </div>
+            <!-- Objections Tab -->
+            <div class="tab-content" id="objections-tab">
+                <p class="muted">Objections ranked by frequency</p>
+                <div id="objectionsList" class="no-calls-message">
+                    Log calls to see objections ranked here
                 </div>
+            </div>
 
-                <!-- Follow-ups Tab -->
-                <div class="tab-content" id="followups-tab">
-                    <p class="muted">Upcoming follow-ups, soonest first</p>
-                    <div id="followUpsList" class="no-calls-message">
-                        No follow-ups scheduled. Add a follow-up date when logging a call.
-                    </div>
+            <!-- Winners Tab -->
+            <div class="tab-content" id="winners-tab">
+                <p class="muted">What's working in your calls</p>
+                <div id="winnersList" class="no-calls-message">
+                    Log calls to track winning tactics
+                </div>
+            </div>
+
+            <!-- Follow-ups Tab -->
+            <div class="tab-content" id="followups-tab">
+                <p class="muted">Upcoming follow-ups, soonest first</p>
+                <div id="followUpsList" class="no-calls-message">
+                    No follow-ups scheduled. Add a follow-up date when logging a call.
                 </div>
             </div>
         </div>
@@ -1441,7 +1387,7 @@
             <div id="excelExportResult" class="no-calls-message" style="display: none;"></div>
         </div>
 
-        <p style="text-align: center; font-size: 11px; opacity: 0.4; margin: 16px 0 4px;">build: 2026-08-18-2</p>
+        <p style="text-align: center; font-size: 11px; opacity: 0.4; margin: 16px 0 4px;">build: 2026-08-18-3</p>
     </div>
 
     <div id="undoToast">
@@ -1454,7 +1400,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
     <script>
-        console.log('build: 2026-08-18-2');
+        console.log('build: 2026-08-18-3');
         const STORAGE_KEY = 'salesTrackerCalls';
         const DAILY_GOAL_KEY = 'salesTrackerDailyGoal';
         const DOCTOR_STAGES_KEY = 'salesTrackerDoctorStages';
@@ -2087,12 +2033,6 @@
         document.getElementById('doctorSearchInput').addEventListener('input', function() {
             doctorSearchTerm = this.value.trim();
             updateDoctorsSection(getCalls());
-        });
-
-        document.getElementById('pipelineBoard').addEventListener('click', function(e) {
-            const card = e.target.closest('[data-action="select-doctor"]');
-            if (!card) return;
-            selectDoctor(card.dataset.key);
         });
 
         document.getElementById('doctorsList').addEventListener('click', function(e) {
@@ -3080,38 +3020,13 @@
         function updateDoctorsSection(allCalls) {
             const summaries = buildDoctorSummaries(allCalls);
             const filtered = summaries.filter(s => matchesSearch(s, doctorSearchTerm));
-            updatePipelineBoard(filtered);
             updateDoctorsList(filtered);
             updateClinicsGrid(filtered);
         }
 
-        function updatePipelineBoard(summaries) {
-            const board = document.getElementById('pipelineBoard');
-            if (!summaries.length) {
-                board.innerHTML = '<div class="no-calls-message">No doctors yet — log a call to start building your pipeline.</div>';
-                return;
-            }
-
-            let html = '';
-            STAGE_DEFS.forEach(stageDef => {
-                const inStage = summaries.filter(s => s.stage === stageDef.id);
-                html += `<div class="pipeline-column">
-                    <div class="pipeline-column-header">${stageDef.label} · ${inStage.length}</div>`;
-                if (!inStage.length) {
-                    html += '<div class="pipeline-empty">—</div>';
-                } else {
-                    inStage.forEach(s => {
-                        html += `<div class="pipeline-card" data-action="select-doctor" data-key="${escapeHtml(s.key)}" style="background: ${stageDef.bg};">
-                            <div class="pipeline-card-clinic" style="color: ${stageDef.color};">${escapeHtml(s.clinic)}</div>
-                            <div class="pipeline-card-doctor">${escapeHtml(s.doctorName)}</div>
-                        </div>`;
-                    });
-                }
-                html += '</div>';
-            });
-            board.innerHTML = html;
-        }
-
+        // Grouped by pipeline stage (stage headers, one row per doctor) - previously this same
+        // list of doctors was also rendered a second time as a separate kanban board above it,
+        // which just duplicated every name; merged into this single view instead.
         function updateDoctorsList(summaries) {
             const container = document.getElementById('doctorsList');
             if (!summaries.length) {
@@ -3120,19 +3035,23 @@
             }
 
             let html = '';
-            summaries.forEach(s => {
-                const stageDef = STAGE_DEFS.find(d => d.id === s.stage) || STAGE_DEFS[0];
-                html += `<div class="doctor-row${s.key === selectedDoctorKey ? ' selected' : ''}" data-action="select-doctor" data-key="${escapeHtml(s.key)}">
-                    <div class="avatar-circle" style="background: ${stageDef.color};">${escapeHtml(initials(s.doctorName))}</div>
-                    <div style="flex: 1; min-width: 0;">
-                        <div class="doctor-row-clinic">${escapeHtml(s.clinic)}</div>
-                        <div class="doctor-row-detail">${escapeHtml(s.doctorName)} • ${s.callCount} call${s.callCount === 1 ? '' : 's'} • last contact ${relativeDay(s.lastContactTs)}</div>
-                    </div>
-                    ${s.hasOverdueFollowUp ? '<span class="overdue-chip">Follow-up overdue</span>' : ''}
-                    <select class="stage-select" data-key="${escapeHtml(s.key)}" style="background: ${stageDef.bg}; color: ${stageDef.color};">
-                        ${STAGE_DEFS.map(d => `<option value="${d.id}"${d.id === s.stage ? ' selected' : ''}>${d.label}</option>`).join('')}
-                    </select>
-                </div>`;
+            STAGE_DEFS.forEach(stageDef => {
+                const inStage = summaries.filter(s => s.stage === stageDef.id);
+                if (!inStage.length) return;
+                html += `<div class="stage-group-header" style="color: ${stageDef.color};">${stageDef.label} · ${inStage.length}</div>`;
+                inStage.forEach(s => {
+                    html += `<div class="doctor-row${s.key === selectedDoctorKey ? ' selected' : ''}" data-action="select-doctor" data-key="${escapeHtml(s.key)}">
+                        <div class="avatar-circle" style="background: ${stageDef.color};">${escapeHtml(initials(s.doctorName))}</div>
+                        <div style="flex: 1; min-width: 0;">
+                            <div class="doctor-row-clinic">${escapeHtml(s.clinic)}</div>
+                            <div class="doctor-row-detail">${escapeHtml(s.doctorName)} • ${s.callCount} call${s.callCount === 1 ? '' : 's'} • last contact ${relativeDay(s.lastContactTs)}</div>
+                        </div>
+                        ${s.hasOverdueFollowUp ? '<span class="overdue-chip">Follow-up overdue</span>' : ''}
+                        <select class="stage-select" data-key="${escapeHtml(s.key)}" style="background: ${stageDef.bg}; color: ${stageDef.color};">
+                            ${STAGE_DEFS.map(d => `<option value="${d.id}"${d.id === s.stage ? ' selected' : ''}>${d.label}</option>`).join('')}
+                        </select>
+                    </div>`;
+                });
             });
             container.innerHTML = html;
         }
